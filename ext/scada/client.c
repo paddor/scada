@@ -442,7 +442,7 @@ static VALUE client_read_async(VALUE self, VALUE rb_nid, VALUE rb_attribute, VAL
 
 /* --- Async write --- */
 
-static VALUE client_write_async(VALUE self, VALUE rb_nid, VALUE rb_value, VALUE rb_condition) {
+static VALUE client_write_async(VALUE self, VALUE rb_nid, VALUE rb_value, VALUE rb_type_sym, VALUE rb_condition) {
     GET_CLIENT(self, c);
     UA_NodeId nodeId = scada_node_id_unwrap(rb_nid);
 
@@ -457,7 +457,10 @@ static VALUE client_write_async(VALUE self, VALUE rb_nid, VALUE rb_value, VALUE 
     UA_Variant value;
     UA_Variant_init(&value);
 
-    if (TYPE(rb_value) == T_FLOAT) {
+    if (!NIL_P(rb_type_sym)) {
+        /* Explicit type provided — use full variant conversion */
+        scada_ruby_to_variant(rb_value, rb_type_sym, &value);
+    } else if (TYPE(rb_value) == T_FLOAT) {
         UA_Double val = NUM2DBL(rb_value);
         UA_Variant_setScalarCopy(&value, &val, &UA_TYPES[UA_TYPES_DOUBLE]);
     } else if (TYPE(rb_value) == T_STRING) {
@@ -916,7 +919,7 @@ void Init_scada_client(VALUE rb_mScada) {
     rb_define_method(rb_cClient, "_get_state", client_get_state, 0);
     rb_define_method(rb_cClient, "_run_iterate", client_run_iterate, 0);
     rb_define_method(rb_cClient, "_read_async", client_read_async, 3);
-    rb_define_method(rb_cClient, "_write_async", client_write_async, 3);
+    rb_define_method(rb_cClient, "_write_async", client_write_async, 4);
     rb_define_method(rb_cClient, "_call_async", client_call_async, 3);
     rb_define_method(rb_cClient, "_namespace_get_index", client_namespace_get_index, 1);
     rb_define_method(rb_cClient, "_get_namespace_index", client_get_namespace_index, 1);

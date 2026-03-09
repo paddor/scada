@@ -95,11 +95,11 @@ module Scada
       end
     end
 
-    def write(node_id, value)
+    def write(node_id, value, type: nil)
       nid = node_id.is_a?(NodeId) ? node_id : NodeId.parse(node_id.to_s)
       Async do
         condition = Async::Promise.new
-        _write_async(nid, value, condition)
+        _write_async(nid, value, type, condition)
         status, _result = condition.wait
         check_async_status!(status)
       end

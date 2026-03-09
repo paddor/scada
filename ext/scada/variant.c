@@ -127,6 +127,18 @@ void scada_ruby_to_variant(VALUE rb_val, VALUE rb_type_sym, UA_Variant *var) {
     if (type == &UA_TYPES[UA_TYPES_BOOLEAN]) {
         UA_Boolean val = RTEST(rb_val);
         UA_Variant_setScalarCopy(var, &val, type);
+    } else if (type == &UA_TYPES[UA_TYPES_SBYTE]) {
+        UA_SByte val = (UA_SByte)NUM2INT(rb_val);
+        UA_Variant_setScalarCopy(var, &val, type);
+    } else if (type == &UA_TYPES[UA_TYPES_BYTE]) {
+        UA_Byte val = (UA_Byte)NUM2UINT(rb_val);
+        UA_Variant_setScalarCopy(var, &val, type);
+    } else if (type == &UA_TYPES[UA_TYPES_INT16]) {
+        UA_Int16 val = (UA_Int16)NUM2INT(rb_val);
+        UA_Variant_setScalarCopy(var, &val, type);
+    } else if (type == &UA_TYPES[UA_TYPES_UINT16]) {
+        UA_UInt16 val = (UA_UInt16)NUM2UINT(rb_val);
+        UA_Variant_setScalarCopy(var, &val, type);
     } else if (type == &UA_TYPES[UA_TYPES_INT32]) {
         UA_Int32 val = NUM2INT(rb_val);
         UA_Variant_setScalarCopy(var, &val, type);

@@ -72,7 +72,7 @@ end
 var_decls = entries.map { |e| "VALUE eScada#{e[:name]};" }.join("\n")
 
 register_lines = entries.map { |e|
-  "    eScada#{e[:name]} = rb_define_class_under(rb_mError, \"#{e[:name]}\", eScadaBase);"
+  "    eScada#{e[:name]} = rb_define_class_under(rb_cError, \"#{e[:name]}\", rb_cError);"
 }.join("\n")
 
 switch_cases = entries.map { |e|
@@ -87,12 +87,11 @@ File.write(File.join(OUT_DIR, "status_codes.h"), <<~H)
   #include <ruby.h>
   #include "deps/open62541.h"
 
-  VALUE eScadaBase;
+  extern VALUE rb_cError;
   #{var_decls}
 
-  void scada_register_errors(VALUE rb_mError) {
-      eScadaBase = rb_define_class_under(rb_mError, "Error", rb_eStandardError);
-      rb_gc_register_mark_object(eScadaBase);
+  void scada_register_errors(VALUE rb_cError) {
+      rb_gc_register_mark_object(rb_cError);
   #{register_lines}
   }
 
@@ -101,7 +100,7 @@ File.write(File.join(OUT_DIR, "status_codes.h"), <<~H)
       switch (code) {
   #{switch_cases}
           default:
-              rb_raise(eScadaBase, "OPC UA error: 0x%08x", code);
+              rb_raise(rb_cError, "OPC UA error: 0x%08x", code);
       }
   }
 

@@ -53,7 +53,7 @@ module Scada
         session_state, connect_status, _channel = _get_state
         scada_check_connect_status(connect_status)
         break if session_state == SESSION_ACTIVATED
-        raise Scada::Error::Error, "Connect timed out" if Async::Clock.now > deadline
+        raise Scada::Error, "Connect timed out" if Async::Clock.now > deadline
         sleep TICK
       end
       # v1.5: after session activation, the client reads the namespace
@@ -136,7 +136,7 @@ module Scada
 
     def check_async_status!(status_code)
       return if status_code == 0
-      raise Scada::Error::Error, "OPC UA error: 0x#{status_code.to_s(16).rjust(8, '0')}"
+      raise Scada::Error, "OPC UA error: 0x#{status_code.to_s(16).rjust(8, '0')}"
     end
 
     def scada_check_connect_status(status_code)
@@ -144,7 +144,7 @@ module Scada
       return if status_code == 0x00000001 # UNCERTAIN (in progress)
       # Raise for actual errors
       if (status_code & 0x80000000) != 0
-        raise Scada::Error::Error, "Connect failed: 0x#{status_code.to_s(16).rjust(8, '0')}"
+        raise Scada::Error, "Connect failed: 0x#{status_code.to_s(16).rjust(8, '0')}"
       end
     end
   end

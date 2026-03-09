@@ -9,7 +9,7 @@
 extern VALUE rb_mScada;
 extern VALUE rb_mNS0;
 extern VALUE rb_mDataType;
-extern VALUE rb_mError;
+extern VALUE rb_cError;
 extern VALUE rb_cNodeId;
 extern VALUE rb_cServer;
 extern VALUE rb_cClient;

@@ -114,7 +114,7 @@ describe Scada::Client do
           client.connect
           client_task = task.async { client.run }
 
-          assert_raises(Scada::Error::Error) do
+          assert_raises(Scada::Error) do
             client.read("ns=1;s=nonexistent").wait
           end
         ensure

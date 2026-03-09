@@ -576,6 +576,18 @@ static VALUE client_namespace_get_index(VALUE self, VALUE rb_uri) {
     return UINT2NUM(nsIndex);
 }
 
+/* v1.5: local namespace index lookup from the client's mapping table
+ * (populated automatically after connect) */
+static VALUE client_get_namespace_index(VALUE self, VALUE rb_uri) {
+    GET_CLIENT(self, c);
+    UA_UInt16 nsIndex;
+    UA_String nsUri = UA_STRING_ALLOC(StringValueCStr(rb_uri));
+    UA_StatusCode rc = UA_Client_getNamespaceIndex(c->client, nsUri, &nsIndex);
+    UA_String_clear(&nsUri);
+    scada_check_status(rc);
+    return UINT2NUM(nsIndex);
+}
+
 /* --- Subscriptions --- */
 
 typedef struct {
@@ -907,6 +919,7 @@ void Init_scada_client(VALUE rb_mScada) {
     rb_define_method(rb_cClient, "_write_async", client_write_async, 3);
     rb_define_method(rb_cClient, "_call_async", client_call_async, 3);
     rb_define_method(rb_cClient, "_namespace_get_index", client_namespace_get_index, 1);
+    rb_define_method(rb_cClient, "_get_namespace_index", client_get_namespace_index, 1);
     rb_define_method(rb_cClient, "_create_subscription_async", client_create_subscription_async, 2);
     rb_define_method(rb_cClient, "_add_monitored_data_change", client_add_monitored_data_change, 4);
     rb_define_method(rb_cClient, "_add_monitored_event", client_add_monitored_event, 5);

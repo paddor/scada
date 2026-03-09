@@ -555,6 +555,12 @@ static VALUE server_add_method_node(VALUE self, VALUE rb_nid, VALUE rb_display_n
     return Qnil;
 }
 
+static VALUE server_add_namespace(VALUE self, VALUE rb_uri) {
+    GET_SERVER(self, s);
+    UA_UInt16 idx = UA_Server_addNamespace(s->server, StringValueCStr(rb_uri));
+    return UINT2NUM(idx);
+}
+
 static VALUE server_has_node(VALUE self, VALUE rb_nid) {
     GET_SERVER(self, s);
     UA_NodeId nodeId = scada_node_id_unwrap(rb_nid);
@@ -578,5 +584,6 @@ void Init_scada_server(VALUE rb_mScada) {
     rb_define_method(rb_cServer, "_add_object_node", server_add_object_node, 4);
     rb_define_method(rb_cServer, "_add_data_source_variable", server_add_data_source_variable, 6);
     rb_define_method(rb_cServer, "_add_method_node", server_add_method_node, 6);
+    rb_define_method(rb_cServer, "_add_namespace", server_add_namespace, 1);
     rb_define_method(rb_cServer, "_has_node", server_has_node, 1);
 }

@@ -56,6 +56,9 @@ module Scada
         raise Scada::Error::Error, "Connect timed out" if Async::Clock.now > deadline
         sleep TICK
       end
+      # v1.5: after session activation, the client reads the namespace
+      # array asynchronously. A few more iterates complete the handshake.
+      3.times { _run_iterate; sleep TICK }
       self
     end
 
@@ -115,6 +118,10 @@ module Scada
 
     def namespace(uri)
       Namespace.new(self, uri)
+    end
+
+    def get_namespace_index(uri)
+      _get_namespace_index(uri)
     end
 
     def subscribe(publish_interval: 0.1)

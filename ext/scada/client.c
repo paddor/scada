@@ -712,7 +712,7 @@ static void create_mon_cb(UA_Client *client, void *userdata,
 }
 
 static VALUE client_add_monitored_data_change(VALUE self, VALUE rb_sub_id,
-    VALUE rb_nid, VALUE rb_proc, VALUE rb_condition) {
+    VALUE rb_nid, VALUE rb_proc, VALUE rb_trigger, VALUE rb_condition) {
     GET_CLIENT(self, c);
 
     UA_UInt32 subId = NUM2UINT(rb_sub_id);
@@ -731,6 +731,27 @@ static VALUE client_add_monitored_data_change(VALUE self, VALUE rb_sub_id,
 
     UA_MonitoredItemCreateRequest monRequest =
         UA_MonitoredItemCreateRequest_default(nodeId);
+
+    /* Override data change trigger if specified */
+    if (!NIL_P(rb_trigger)) {
+        ID tid = SYM2ID(rb_trigger);
+        UA_DataChangeTrigger trigger;
+        if (tid == rb_intern("status"))
+            trigger = UA_DATACHANGETRIGGER_STATUS;
+        else if (tid == rb_intern("status_value"))
+            trigger = UA_DATACHANGETRIGGER_STATUSVALUE;
+        else if (tid == rb_intern("status_value_timestamp"))
+            trigger = UA_DATACHANGETRIGGER_STATUSVALUETIMESTAMP;
+        else
+            rb_raise(rb_eArgError, "Unknown trigger: %s", rb_id2name(tid));
+
+        UA_DataChangeFilter *filter = UA_DataChangeFilter_new();
+        filter->trigger = trigger;
+        filter->deadbandType = UA_DEADBANDTYPE_NONE;
+        monRequest.requestedParameters.filter.encoding = UA_EXTENSIONOBJECT_DECODED;
+        monRequest.requestedParameters.filter.content.decoded.type = &UA_TYPES[UA_TYPES_DATACHANGEFILTER];
+        monRequest.requestedParameters.filter.content.decoded.data = filter;
+    }
 
     UA_CreateMonitoredItemsRequest createRequest;
     UA_CreateMonitoredItemsRequest_init(&createRequest);
@@ -924,6 +945,6 @@ void Init_scada_client(VALUE rb_mScada) {
     rb_define_method(rb_cClient, "_namespace_get_index", client_namespace_get_index, 1);
     rb_define_method(rb_cClient, "_get_namespace_index", client_get_namespace_index, 1);
     rb_define_method(rb_cClient, "_create_subscription_async", client_create_subscription_async, 2);
-    rb_define_method(rb_cClient, "_add_monitored_data_change", client_add_monitored_data_change, 4);
+    rb_define_method(rb_cClient, "_add_monitored_data_change", client_add_monitored_data_change, 5);
     rb_define_method(rb_cClient, "_add_monitored_event", client_add_monitored_event, 5);
 }

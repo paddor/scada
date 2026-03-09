@@ -6,10 +6,10 @@ module Scada
         @sub_id = sub_id
       end
 
-      def monitor_data_changes(node_id, &block)
+      def monitor_data_changes(node_id, trigger: nil, &block)
         nid = node_id.is_a?(NodeId) ? node_id : NodeId.parse(node_id.to_s)
         condition = Async::Promise.new
-        @client._add_monitored_data_change(@sub_id, nid, block, condition)
+        @client._add_monitored_data_change(@sub_id, nid, block, trigger, condition)
         status, mon_id = condition.wait
         @client.send(:check_async_status!, status)
         MonitoredItem.new(@client, @sub_id, mon_id)

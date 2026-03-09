@@ -265,6 +265,25 @@ static VALUE server_add_variable_node(VALUE self, VALUE rb_nid, VALUE rb_type,
     return Qnil;
 }
 
+static VALUE server_write_value(VALUE self, VALUE rb_nid, VALUE rb_value, VALUE rb_type_sym) {
+    GET_SERVER(self, s);
+    UA_NodeId nodeId = scada_node_id_unwrap(rb_nid);
+
+    UA_DataValue dv;
+    UA_DataValue_init(&dv);
+    dv.hasValue = true;
+    scada_ruby_to_variant(rb_value, rb_type_sym, &dv.value);
+    dv.hasSourceTimestamp = true;
+    dv.sourceTimestamp = UA_DateTime_now();
+    dv.hasServerTimestamp = true;
+    dv.serverTimestamp = UA_DateTime_now();
+
+    UA_StatusCode rc = UA_Server_writeDataValue(s->server, nodeId, dv);
+    UA_DataValue_clear(&dv);
+    scada_check_status(rc);
+    return Qnil;
+}
+
 static VALUE server_add_object_node(VALUE self, VALUE rb_nid, VALUE rb_display_name,
                                      VALUE rb_browse_name, VALUE rb_parent) {
     GET_SERVER(self, s);
@@ -581,6 +600,7 @@ void Init_scada_server(VALUE rb_mScada) {
     rb_define_method(rb_cServer, "_run_iterate", server_run_iterate, 0);
     rb_define_method(rb_cServer, "_run_shutdown", server_run_shutdown, 0);
     rb_define_method(rb_cServer, "_add_variable_node", server_add_variable_node, 6);
+    rb_define_method(rb_cServer, "_write_value", server_write_value, 3);
     rb_define_method(rb_cServer, "_add_object_node", server_add_object_node, 4);
     rb_define_method(rb_cServer, "_add_data_source_variable", server_add_data_source_variable, 6);
     rb_define_method(rb_cServer, "_add_method_node", server_add_method_node, 6);

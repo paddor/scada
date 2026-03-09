@@ -6,7 +6,7 @@
 /* Forward declaration */
 VALUE scada_node_id_numeric(uint16_t ns, uint32_t id);
 
-void scada_register_ns0(VALUE rb_mNS0, VALUE rb_mDataType) {
+static void scada_register_ns0(VALUE rb_mNS0, VALUE rb_mDataType) {
     rb_define_const(rb_mNS0, "BOOLEAN", scada_node_id_numeric(0, 1));
     rb_define_const(rb_mNS0, "S_BYTE", scada_node_id_numeric(0, 2));
     rb_define_const(rb_mNS0, "BYTE", scada_node_id_numeric(0, 3));

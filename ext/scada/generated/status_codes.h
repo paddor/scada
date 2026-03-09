@@ -100,7 +100,7 @@ VALUE eScadaBadNumericOverflow;
 VALUE eScadaBadServerUriInvalid;
 VALUE eScadaBadServerNameMissing;
 VALUE eScadaBadDiscoveryUrlMissing;
-VALUE eScadaBadSempahoreFileMissing;
+VALUE eScadaBadSemaphoreFileMissing;
 VALUE eScadaBadRequestTypeInvalid;
 VALUE eScadaBadSecurityModeRejected;
 VALUE eScadaBadSecurityPolicyRejected;
@@ -217,6 +217,7 @@ VALUE eScadaBadAggregateConfigurationRejected;
 VALUE eScadaGoodDataIgnored;
 VALUE eScadaBadRequestNotAllowed;
 VALUE eScadaBadRequestNotComplete;
+VALUE eScadaBadTransactionPending;
 VALUE eScadaBadTicketRequired;
 VALUE eScadaBadTicketInvalid;
 VALUE eScadaGoodEdited;
@@ -351,7 +352,7 @@ void scada_register_errors(VALUE rb_mError) {
     eScadaBadServerUriInvalid = rb_define_class_under(rb_mError, "BadServerUriInvalid", eScadaBase);
     eScadaBadServerNameMissing = rb_define_class_under(rb_mError, "BadServerNameMissing", eScadaBase);
     eScadaBadDiscoveryUrlMissing = rb_define_class_under(rb_mError, "BadDiscoveryUrlMissing", eScadaBase);
-    eScadaBadSempahoreFileMissing = rb_define_class_under(rb_mError, "BadSempahoreFileMissing", eScadaBase);
+    eScadaBadSemaphoreFileMissing = rb_define_class_under(rb_mError, "BadSemaphoreFileMissing", eScadaBase);
     eScadaBadRequestTypeInvalid = rb_define_class_under(rb_mError, "BadRequestTypeInvalid", eScadaBase);
     eScadaBadSecurityModeRejected = rb_define_class_under(rb_mError, "BadSecurityModeRejected", eScadaBase);
     eScadaBadSecurityPolicyRejected = rb_define_class_under(rb_mError, "BadSecurityPolicyRejected", eScadaBase);
@@ -468,6 +469,7 @@ void scada_register_errors(VALUE rb_mError) {
     eScadaGoodDataIgnored = rb_define_class_under(rb_mError, "GoodDataIgnored", eScadaBase);
     eScadaBadRequestNotAllowed = rb_define_class_under(rb_mError, "BadRequestNotAllowed", eScadaBase);
     eScadaBadRequestNotComplete = rb_define_class_under(rb_mError, "BadRequestNotComplete", eScadaBase);
+    eScadaBadTransactionPending = rb_define_class_under(rb_mError, "BadTransactionPending", eScadaBase);
     eScadaBadTicketRequired = rb_define_class_under(rb_mError, "BadTicketRequired", eScadaBase);
     eScadaBadTicketInvalid = rb_define_class_under(rb_mError, "BadTicketInvalid", eScadaBase);
     eScadaGoodEdited = rb_define_class_under(rb_mError, "GoodEdited", eScadaBase);
@@ -793,8 +795,8 @@ void scada_check_status(UA_StatusCode code) {
         case UA_STATUSCODE_BADDISCOVERYURLMISSING:
             rb_raise(eScadaBadDiscoveryUrlMissing, "%s", "No DiscoveryUrl was specified.");
             break;
-        case UA_STATUSCODE_BADSEMPAHOREFILEMISSING:
-            rb_raise(eScadaBadSempahoreFileMissing, "%s", "The semaphore file specified by the client is not valid.");
+        case UA_STATUSCODE_BADSEMAPHOREFILEMISSING:
+            rb_raise(eScadaBadSemaphoreFileMissing, "%s", "The semaphore file specified by the client is not valid.");
             break;
         case UA_STATUSCODE_BADREQUESTTYPEINVALID:
             rb_raise(eScadaBadRequestTypeInvalid, "%s", "The security token request type is not valid.");
@@ -1143,6 +1145,9 @@ void scada_check_status(UA_StatusCode code) {
             break;
         case UA_STATUSCODE_BADREQUESTNOTCOMPLETE:
             rb_raise(eScadaBadRequestNotComplete, "%s", "The request has not been processed by the server yet.");
+            break;
+        case UA_STATUSCODE_BADTRANSACTIONPENDING:
+            rb_raise(eScadaBadTransactionPending, "%s", "The operation is not allowed because a transaction is in progress.");
             break;
         case UA_STATUSCODE_BADTICKETREQUIRED:
             rb_raise(eScadaBadTicketRequired, "%s", "The device identity needs a ticket before it can be accepted.");

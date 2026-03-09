@@ -169,6 +169,9 @@ static VALUE client_initialize(int argc, VALUE *argv, VALUE self) {
             if (!NIL_P(username) && !NIL_P(password)) {
                 rb_iv_set(self, "@_username", username);
                 rb_iv_set(self, "@_password", password);
+                /* Allow password over unencrypted channels (v1.5+ default is false) */
+                if (!encrypted)
+                    cc->allowNonePolicyPassword = true;
             }
         } else {
             c->client = UA_Client_new();
@@ -543,10 +546,10 @@ static VALUE client_call_async(VALUE self, VALUE rb_nid, VALUE rb_args, VALUE rb
     }
 
     UA_UInt32 reqId;
-    UA_StatusCode rc = __UA_Client_call_async(
+    UA_StatusCode rc = UA_Client_call_async(
         c->client, objectId, methodId,
         inputSize, inputs,
-        (UA_ClientAsyncServiceCallback)call_async_cb,
+        (UA_ClientAsyncCallCallback)call_async_cb,
         pending, &reqId);
 
     for (size_t i = 0; i < inputSize; i++)
@@ -597,10 +600,11 @@ static void *create_sub_signal_gvl(void *arg) {
 }
 
 static void create_sub_cb_nogvl(UA_Client *client, void *userdata,
-                                 UA_UInt32 requestId, void *response) {
+                                 UA_UInt32 requestId,
+                                 UA_CreateSubscriptionResponse *response) {
     (void)client; (void)requestId;
     AsyncPending *p = (AsyncPending *)userdata;
-    CreateSubGVLArgs args = { p, (UA_CreateSubscriptionResponse *)response };
+    CreateSubGVLArgs args = { p, response };
     rb_thread_call_with_gvl(create_sub_signal_gvl, &args);
 }
 
@@ -660,14 +664,13 @@ static void data_change_notification_cb(UA_Client *client, UA_UInt32 subId,
 
 typedef struct {
     AsyncPending *pending;
-    void *response;
+    UA_CreateMonitoredItemsResponse *response;
 } CreateMonGVLArgs;
 
 static void *create_mon_signal_gvl(void *arg) {
     CreateMonGVLArgs *a = arg;
     AsyncPending *p = a->pending;
-    UA_CreateMonitoredItemsResponse *resp =
-        (UA_CreateMonitoredItemsResponse *)a->response;
+    UA_CreateMonitoredItemsResponse *resp = a->response;
 
     p->status = resp->responseHeader.serviceResult;
     UA_UInt32 monId = 0;
@@ -685,7 +688,8 @@ static void *create_mon_signal_gvl(void *arg) {
 }
 
 static void create_mon_cb(UA_Client *client, void *userdata,
-                           UA_UInt32 requestId, void *response) {
+                           UA_UInt32 requestId,
+                           UA_CreateMonitoredItemsResponse *response) {
     (void)client; (void)requestId;
     AsyncPending *p = (AsyncPending *)userdata;
     CreateMonGVLArgs args = { p, response };
@@ -723,9 +727,10 @@ static VALUE client_add_monitored_data_change(VALUE self, VALUE rb_sub_id,
     void *contexts[] = { ctx };
     UA_Client_DataChangeNotificationCallback callbacks[] = { data_change_notification_cb };
 
+    UA_Client_DeleteMonitoredItemCallback deleteCallbacks[] = { NULL };
     UA_UInt32 reqId;
     UA_StatusCode rc = UA_Client_MonitoredItems_createDataChanges_async(
-        c->client, createRequest, contexts, callbacks, NULL,
+        c->client, createRequest, contexts, callbacks, deleteCallbacks,
         create_mon_cb, pending, &reqId);
 
     if (rc != UA_STATUSCODE_GOOD) {
@@ -741,8 +746,7 @@ static VALUE client_add_monitored_data_change(VALUE self, VALUE rb_sub_id,
 
 typedef struct {
     MonitorCtx *ctx;
-    size_t nEventFields;
-    UA_Variant *eventFields;
+    UA_KeyValueMap eventFields;
     VALUE rb_select;
 } EventGVLArgs;
 
@@ -754,9 +758,9 @@ static void *event_with_gvl(void *arg) {
     VALUE source_name = Qnil, time_val = Qnil;
 
     long select_len = RARRAY_LEN(a->rb_select);
-    for (size_t i = 0; i < a->nEventFields && (long)i < select_len; i++) {
+    for (size_t i = 0; i < a->eventFields.mapSize && (long)i < select_len; i++) {
         VALUE field_sym = rb_ary_entry(a->rb_select, i);
-        VALUE val = scada_variant_to_ruby(&a->eventFields[i]);
+        VALUE val = scada_variant_to_ruby(&a->eventFields.map[i].value);
         ID fid = SYM2ID(field_sym);
 
         if (fid == rb_intern("event_type"))       event_type = val;
@@ -776,7 +780,7 @@ static void *event_with_gvl(void *arg) {
 
 static void event_notification_cb(UA_Client *client, UA_UInt32 subId,
     void *subContext, UA_UInt32 monId, void *monContext,
-    size_t nEventFields, UA_Variant *eventFields) {
+    const UA_KeyValueMap eventFields) {
     (void)client; (void)subId; (void)subContext; (void)monId;
     MonitorCtx *ctx = (MonitorCtx *)monContext;
     if (!ctx || NIL_P(ctx->proc)) return;
@@ -787,7 +791,7 @@ static void event_notification_cb(UA_Client *client, UA_UInt32 subId,
         1, ID2SYM(rb_intern("@_scada_select")));
     if (NIL_P(rb_select)) rb_select = rb_ary_new();
 
-    EventGVLArgs args = { ctx, nEventFields, eventFields, rb_select };
+    EventGVLArgs args = { ctx, eventFields, rb_select };
     rb_thread_call_with_gvl(event_with_gvl, &args);
 }
 
@@ -870,10 +874,11 @@ static VALUE client_add_monitored_event(VALUE self, VALUE rb_sub_id,
 
     void *contexts[] = { ctx };
     UA_Client_EventNotificationCallback callbacks[] = { event_notification_cb };
+    UA_Client_DeleteMonitoredItemCallback evDeleteCallbacks[] = { NULL };
 
     UA_UInt32 reqId;
     UA_StatusCode rc = UA_Client_MonitoredItems_createEvents_async(
-        c->client, createRequest, contexts, callbacks, NULL,
+        c->client, createRequest, contexts, callbacks, evDeleteCallbacks,
         create_mon_cb, pending, &reqId);
 
     for (long i = 0; i < select_len; i++)

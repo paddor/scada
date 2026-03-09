@@ -149,6 +149,9 @@ static VALUE server_initialize(int argc, VALUE *argv, VALUE self) {
                     UA_STRING_ALLOC(StringValueCStr(product_uri));
             }
 
+            /* Allow password over unencrypted channels (v1.5+ default is false) */
+            s->config->allowNonePolicyPassword = true;
+
             VALUE users = rb_funcall(rb_config, rb_intern("users"), 0);
             VALUE allow_anon = rb_funcall(rb_config, rb_intern("allow_anonymous"), 0);
             if (!NIL_P(users) && RHASH_SIZE(users) > 0) {

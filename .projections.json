@@ -1,0 +1,9 @@
+{
+  "lib/scada/*.rb": {
+    "alternate": "test/scada/{}_test.rb"
+  },
+  "test/scada/*_test.rb": {
+    "alternate": "lib/scada/{}.rb",
+    "dispatch": "bundle exec ruby -Itest {file}"
+  }
+}

@@ -173,6 +173,11 @@ static VALUE client_initialize(int argc, VALUE *argv, VALUE self) {
                 if (!encrypted)
                     cc->allowNonePolicyPassword = true;
             }
+
+            /* Connectivity check interval */
+            VALUE rb_cci = rb_funcall(rb_config, rb_intern("connectivity_check_interval"), 0);
+            if (!NIL_P(rb_cci))
+                cc->connectivityCheckInterval = (UA_UInt32)(NUM2DBL(rb_cci) * 1000.0);
         } else {
             c->client = UA_Client_new();
             if (!c->client) rb_raise(rb_eRuntimeError, "Failed to create UA_Client");
@@ -216,6 +221,20 @@ static VALUE client_get_state(VALUE self) {
     rb_ary_push(ary, UINT2NUM(connectStatus));
     rb_ary_push(ary, INT2NUM((int)channelState));
     return ary;
+}
+
+/* Check if the namespace array has been fetched from the server.
+ * Before the async read completes, ns=1 is UA_STRING_NULL.
+ * After, it contains the server's application URI. */
+static VALUE client_have_namespaces(VALUE self) {
+    GET_CLIENT(self, c);
+    UA_String nsUri;
+    UA_StatusCode rc = UA_Client_getNamespaceUri(c->client, 1, &nsUri);
+    if (rc != UA_STATUSCODE_GOOD)
+        return Qfalse;
+    UA_Boolean loaded = nsUri.length > 0;
+    UA_String_clear(&nsUri);
+    return loaded ? Qtrue : Qfalse;
 }
 
 /* --- Run iterate (GVL released) --- */
@@ -938,6 +957,7 @@ void Init_scada_client(VALUE rb_mScada) {
     rb_define_method(rb_cClient, "initialize", client_initialize, -1);
     rb_define_method(rb_cClient, "_connect_async", client_connect_async, 0);
     rb_define_method(rb_cClient, "_get_state", client_get_state, 0);
+    rb_define_method(rb_cClient, "_have_namespaces?", client_have_namespaces, 0);
     rb_define_method(rb_cClient, "_run_iterate", client_run_iterate, 0);
     rb_define_method(rb_cClient, "_read_async", client_read_async, 3);
     rb_define_method(rb_cClient, "_write_async", client_write_async, 4);

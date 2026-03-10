@@ -127,6 +127,7 @@ static VALUE server_initialize(int argc, VALUE *argv, VALUE self) {
             s->server = UA_Server_newWithConfig(&config);
             if (!s->server) rb_raise(rb_eRuntimeError, "Failed to create UA_Server");
             s->config = UA_Server_getConfig(s->server);
+            s->config->tcpReuseAddr = true;
 
             VALUE app_name = rb_funcall(rb_config, rb_intern("application_name"), 0);
             if (!NIL_P(app_name)) {

@@ -7,22 +7,24 @@ module Scada
       application_name application_uri product_uri
       certificate private_key trust_list
       security_mode username password
+      connectivity_check_interval
       logger
     ].freeze
 
     Config = Data.define(*CONFIG_FIELDS) do
       def self.default
         new(
-          application_name: 'Scada Ruby OPC UA Client',
-          application_uri:  'urn:scada:client',
-          product_uri:      'urn:scada.rb',
-          certificate:      nil,
-          private_key:      nil,
-          trust_list:       [],
-          security_mode:    SecurityMode::NONE,
-          username:         nil,
-          password:         nil,
-          logger:           nil
+          application_name:           'Scada Ruby OPC UA Client',
+          application_uri:            'urn:scada:client',
+          product_uri:                'urn:scada.rb',
+          certificate:                nil,
+          private_key:                nil,
+          trust_list:                 [],
+          security_mode:              SecurityMode::NONE,
+          username:                   nil,
+          password:                   nil,
+          connectivity_check_interval: nil,
+          logger:                     nil
         )
       end
 
@@ -53,23 +55,28 @@ module Scada
     # Session states from open62541
     SESSION_ACTIVATED = 4
 
+    State = Data.define(:session, :status, :channel)
+
+    def state
+      session, status_code, channel = _get_state
+      State.new(session, StatusCode.new(status_code), channel)
+    end
+
     def connect
       _connect_async
       deadline = Async::Clock.now + 5.0
       loop do
         _run_iterate
-        session_state, connect_status, _channel = _get_state
-        scada_check_connect_status(connect_status)
-        break if session_state == SESSION_ACTIVATED
+        s = state
+        raise_on_bad_status!(s.status, 'Connect failed')
+        break if s.session == SESSION_ACTIVATED
         if Async::Clock.now > deadline
           raise Scada::Error, 'Connect timed out'
         end
         sleep TICK
       end
-      # v1.5: after session activation, the client reads the
-      # namespace array asynchronously. A few more iterates
-      # complete the handshake.
-      3.times { _run_iterate; sleep TICK }
+      wait_for_namespaces(deadline)
+      @was_connected = true
       self
     end
 
@@ -78,6 +85,7 @@ module Scada
       loop do
         run_next += TICK
         _run_iterate
+        maybe_reconnect
         remaining = run_next - Async::Clock.now
         if remaining > 0
           sleep(remaining)
@@ -143,6 +151,17 @@ module Scada
 
     private
 
+    def maybe_reconnect
+      return unless @was_connected
+      s = state
+      return if s.session == SESSION_ACTIVATED
+
+      # Session lost — retry connect
+      _connect_async
+    rescue Scada::Error
+      # Connect attempt failed, will retry next tick
+    end
+
     def parse_node_id(node_id)
       if node_id.is_a?(NodeId)
         node_id
@@ -164,17 +183,29 @@ module Scada
     def check_async_status!(status_code)
       return if status_code == 0
 
-      hex = status_code.to_s(16).rjust(8, '0')
-      raise Scada::Error, "OPC UA error: 0x#{hex}"
+      status = StatusCode.new(status_code)
+      raise Scada::Error, "OPC UA error: #{status}"
     end
 
-    def scada_check_connect_status(status_code)
-      return if status_code == 0          # GOOD
-      return if status_code == 0x00000001 # UNCERTAIN
-      return unless (status_code & 0x80000000) != 0
+    def raise_on_bad_status!(status, prefix)
+      return unless status.bad?
 
-      hex = status_code.to_s(16).rjust(8, '0')
-      raise Scada::Error, "Connect failed: 0x#{hex}"
+      raise Scada::Error, "#{prefix}: #{status}"
+    end
+
+    def wait_for_namespaces(deadline)
+      # After session activation, the client fetches the
+      # namespace array asynchronously. Keep iterating
+      # until the local cache is populated (ns=1 goes
+      # from NULL to the server's application URI).
+      loop do
+        _run_iterate
+        break if _have_namespaces?
+        if Async::Clock.now > deadline
+          raise Scada::Error, 'Namespace fetch timed out'
+        end
+        sleep TICK
+      end
     end
   end
 end

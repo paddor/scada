@@ -10,7 +10,7 @@ VALUE rb_cNodeId;
 VALUE rb_cServer;
 VALUE rb_cClient;
 VALUE rb_cDataValue;
-VALUE rb_cStatus;
+VALUE rb_cStatusCode;
 
 void Init_scada(void) {
     rb_mScada = rb_define_module("Scada");
@@ -26,7 +26,7 @@ void Init_scada(void) {
 
     /* Look up Ruby-defined value objects */
     rb_cDataValue = rb_const_get(rb_mScada, rb_intern("DataValue"));
-    rb_cStatus = rb_const_get(rb_mScada, rb_intern("Status"));
+    rb_cStatusCode = rb_const_get(rb_mScada, rb_intern("StatusCode"));
 
     /* Init subsystems */
     Init_scada_node_id(rb_mScada);

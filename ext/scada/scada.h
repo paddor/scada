@@ -14,7 +14,7 @@ extern VALUE rb_cNodeId;
 extern VALUE rb_cServer;
 extern VALUE rb_cClient;
 extern VALUE rb_cDataValue;
-extern VALUE rb_cStatus;
+extern VALUE rb_cStatusCode;
 
 /* NodeId helpers */
 VALUE scada_node_id_numeric(uint16_t ns, uint32_t id);

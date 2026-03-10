@@ -220,9 +220,9 @@ VALUE scada_data_value_to_ruby(const UA_DataValue *dv) {
         val = scada_variant_to_ruby(&dv->value);
 
     if (dv->hasStatus)
-        status = rb_funcall(rb_cStatus, rb_intern("new"), 1, UINT2NUM(dv->status));
+        status = rb_funcall(rb_cStatusCode, rb_intern("new"), 1, UINT2NUM(dv->status));
     else
-        status = rb_funcall(rb_cStatus, rb_intern("new"), 1, UINT2NUM(UA_STATUSCODE_GOOD));
+        status = rb_funcall(rb_cStatusCode, rb_intern("new"), 1, UINT2NUM(UA_STATUSCODE_GOOD));
 
     if (dv->hasSourceTimestamp) {
         double epoch = (double)(dv->sourceTimestamp - UA_DATETIME_UNIX_EPOCH) / 1e7;

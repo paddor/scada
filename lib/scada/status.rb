@@ -1,5 +1,5 @@
 module Scada
-  Status = Data.define(:code) do
+  StatusCode = Data.define(:code) do
     def good? = (code & 0xC0000000) == 0
     def bad?  = (code & 0x80000000) != 0
     def uncertain? = !good? && !bad?
@@ -13,7 +13,7 @@ module Scada
     end
 
     def inspect
-      "#<Scada::Status #{to_s}>"
+      "#<Scada::StatusCode #{to_s}>"
     end
   end
 end

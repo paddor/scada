@@ -1,25 +1,30 @@
-require "async"
+require 'async'
 
 module Scada
   class Server
     TICK = 0.02
 
-    Config = Data.define(
-      :port, :application_name, :application_uri, :product_uri,
-      :certificate, :private_key, :trust_list,
-      :security_mode, :users, :allow_anonymous,
-      :sampling_interval, :publishing_interval,
-      :logger
-    ) do
+    CONFIG_FIELDS = %i[
+      port application_name application_uri product_uri
+      certificate private_key trust_list
+      security_mode users allow_anonymous
+      sampling_interval publishing_interval
+      logger
+    ].freeze
+
+    Config = Data.define(*CONFIG_FIELDS) do
       def self.default
         new(
           port: 4840,
-          application_name: "Scada Ruby OPC UA Server",
-          application_uri: "urn:scada:server",
-          product_uri: "urn:scada.rb",
-          certificate: nil, private_key: nil, trust_list: [],
+          application_name: 'Scada Ruby OPC UA Server',
+          application_uri: 'urn:scada:server',
+          product_uri: 'urn:scada.rb',
+          certificate: nil,
+          private_key: nil,
+          trust_list: [],
           security_mode: SecurityMode::NONE,
-          users: {}, allow_anonymous: nil,
+          users: {},
+          allow_anonymous: nil,
           sampling_interval: 0.005..10.0,
           publishing_interval: 0.01..60.0,
           logger: nil
@@ -28,23 +33,27 @@ module Scada
 
       def self.secure(certificate:, private_key:, **opts)
         default.with(
-          certificate: certificate, private_key: private_key,
+          certificate: certificate,
+          private_key: private_key,
           security_mode: SecurityMode::SIGN_AND_ENCRYPT,
           **opts
         )
       end
 
       def self.development
-        require "localhost"
+        require 'localhost'
         authority = Localhost::Authority.fetch
         cert = authority.server_identity.certificate
         key = authority.server_identity.key
+        san = cert.extensions.find do |e|
+          e.oid == 'subjectAltName'
+        end
+        uri = san&.value&.[](/URI:(.+)/, 1)
         default.with(
-          certificate: cert, private_key: key,
+          certificate: cert,
+          private_key: key,
           security_mode: SecurityMode::SIGN_AND_ENCRYPT,
-          application_uri: cert.extensions.find { |e|
-            e.oid == "subjectAltName"
-          }&.value&.[](/URI:(.+)/, 1) || "urn:scada:server"
+          application_uri: uri || 'urn:scada:server'
         )
       end
     end
@@ -66,30 +75,43 @@ module Scada
       _run_shutdown
     end
 
-    def add_variable(node_id_str, type:, value: nil, display_name: nil, browse_name: nil,
-                     on_read: nil, on_write: nil, &write_validator)
-      nid = node_id_str.is_a?(NodeId) ? node_id_str : NodeId.parse(node_id_str)
+    def add_variable( # rubocop:disable Metrics/ParameterLists
+      node_id_str, type:,
+      value: nil, display_name: nil, browse_name: nil,
+      on_read: nil, on_write: nil, &write_validator
+    )
+      nid = parse_node_id(node_id_str)
       dn = display_name || browse_name || node_id_str.to_s
-      bn = browse_name || (display_name.is_a?(String) ? display_name : node_id_str.to_s)
+      bn = browse_name || default_browse_name(
+        display_name, node_id_str
+      )
 
       if on_read || on_write
-        _add_data_source_variable(nid, type, dn, bn, on_read, on_write)
+        _add_data_source_variable(
+          nid, type, dn, bn, on_read, on_write
+        )
       else
-        _add_variable_node(nid, type, value, dn, bn, write_validator)
+        _add_variable_node(
+          nid, type, value, dn, bn, write_validator
+        )
       end
     end
 
-    def add_object(node_id_str, display_name: nil, browse_name: nil,
-                   parent: Scada::NS0::OBJECTS_FOLDER)
-      nid = node_id_str.is_a?(NodeId) ? node_id_str : NodeId.parse(node_id_str)
+    def add_object(
+      node_id_str, display_name: nil, browse_name: nil,
+      parent: Scada::NS0::OBJECTS_FOLDER
+    )
+      nid = parse_node_id(node_id_str)
       dn = display_name || node_id_str.to_s
       bn = browse_name || dn
       _add_object_node(nid, dn, bn, parent)
     end
 
-    def add_method(node_id_str, display_name: nil, browse_name: nil,
-                   input: [], output: [], &block)
-      nid = node_id_str.is_a?(NodeId) ? node_id_str : NodeId.parse(node_id_str)
+    def add_method(
+      node_id_str, display_name: nil, browse_name: nil,
+      input: [], output: [], &block
+    )
+      nid = parse_node_id(node_id_str)
       dn = display_name || node_id_str.to_s
       bn = browse_name || dn
       _add_method_node(nid, dn, bn, input, output, block)
@@ -104,18 +126,15 @@ module Scada
     end
 
     def on_read(node_id, &block)
-      nid = node_id.is_a?(NodeId) ? node_id : NodeId.parse(node_id)
-      _on_read(nid, block)
+      _on_read(parse_node_id(node_id), block)
     end
 
     def on_write(node_id, &block)
-      nid = node_id.is_a?(NodeId) ? node_id : NodeId.parse(node_id)
-      _on_write(nid, block)
+      _on_write(parse_node_id(node_id), block)
     end
 
     def on_call(node_id, &block)
-      nid = node_id.is_a?(NodeId) ? node_id : NodeId.parse(node_id)
-      _on_call(nid, block)
+      _on_call(parse_node_id(node_id), block)
     end
 
     def bind(ns, &block)
@@ -123,21 +142,37 @@ module Scada
     end
 
     def write_value(node_id, value, type:)
-      nid = node_id.is_a?(NodeId) ? node_id : NodeId.parse(node_id.to_s)
-      _write_value(nid, value, type)
+      _write_value(parse_node_id(node_id), value, type)
     end
 
     def add_namespace(uri)
       _add_namespace(uri)
     end
 
-    def has_node?(node_id)
-      nid = node_id.is_a?(NodeId) ? node_id : NodeId.parse(node_id)
-      _has_node(nid)
+    def has_node?(node_id) # rubocop:disable Naming/PredicateName
+      _has_node(parse_node_id(node_id))
     end
 
     def each_node(namespace: nil, node_class: nil, &block)
       _each_node(namespace, node_class, &block)
+    end
+
+    private
+
+    def parse_node_id(node_id)
+      if node_id.is_a?(NodeId)
+        node_id
+      else
+        NodeId.parse(node_id.to_s)
+      end
+    end
+
+    def default_browse_name(display_name, node_id_str)
+      if display_name.is_a?(String)
+        display_name
+      else
+        node_id_str.to_s
+      end
     end
 
     class BindContext

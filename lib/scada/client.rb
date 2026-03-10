@@ -14,22 +14,22 @@ module Scada
       def self.default
         new(
           application_name: 'Scada Ruby OPC UA Client',
-          application_uri: 'urn:scada:client',
-          product_uri: 'urn:scada.rb',
-          certificate: nil,
-          private_key: nil,
-          trust_list: [],
-          security_mode: SecurityMode::NONE,
-          username: nil,
-          password: nil,
-          logger: nil
+          application_uri:  'urn:scada:client',
+          product_uri:      'urn:scada.rb',
+          certificate:      nil,
+          private_key:      nil,
+          trust_list:       [],
+          security_mode:    SecurityMode::NONE,
+          username:         nil,
+          password:         nil,
+          logger:           nil
         )
       end
 
       def self.secure(certificate:, private_key:, **opts)
         default.with(
-          certificate: certificate,
-          private_key: private_key,
+          certificate:   certificate,
+          private_key:   private_key,
           security_mode: SecurityMode::SIGN_AND_ENCRYPT,
           **opts
         )
@@ -38,11 +38,11 @@ module Scada
       def self.development
         require 'localhost'
         authority = Localhost::Authority.fetch
-        cert = authority.client_identity.certificate
-        key = authority.client_identity.key
+        cert      = authority.client_identity.certificate
+        key       = authority.client_identity.key
         default.with(
-          certificate: cert,
-          private_key: key,
+          certificate:   cert,
+          private_key:   key,
           security_mode: SecurityMode::SIGN_AND_ENCRYPT
         )
       end

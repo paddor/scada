@@ -15,26 +15,26 @@ module Scada
     Config = Data.define(*CONFIG_FIELDS) do
       def self.default
         new(
-          port: 4840,
-          application_name: 'Scada Ruby OPC UA Server',
-          application_uri: 'urn:scada:server',
-          product_uri: 'urn:scada.rb',
-          certificate: nil,
-          private_key: nil,
-          trust_list: [],
-          security_mode: SecurityMode::NONE,
-          users: {},
-          allow_anonymous: nil,
-          sampling_interval: 0.005..10.0,
+          port:                4840,
+          application_name:    'Scada Ruby OPC UA Server',
+          application_uri:     'urn:scada:server',
+          product_uri:         'urn:scada.rb',
+          certificate:         nil,
+          private_key:         nil,
+          trust_list:          [],
+          security_mode:       SecurityMode::NONE,
+          users:               {},
+          allow_anonymous:     nil,
+          sampling_interval:   0.005..10.0,
           publishing_interval: 0.01..60.0,
-          logger: nil
+          logger:              nil
         )
       end
 
       def self.secure(certificate:, private_key:, **opts)
         default.with(
-          certificate: certificate,
-          private_key: private_key,
+          certificate:   certificate,
+          private_key:   private_key,
           security_mode: SecurityMode::SIGN_AND_ENCRYPT,
           **opts
         )
@@ -43,16 +43,16 @@ module Scada
       def self.development
         require 'localhost'
         authority = Localhost::Authority.fetch
-        cert = authority.server_identity.certificate
-        key = authority.server_identity.key
-        san = cert.extensions.find do |e|
+        cert      = authority.server_identity.certificate
+        key       = authority.server_identity.key
+        san       = cert.extensions.find do |e|
           e.oid == 'subjectAltName'
         end
         uri = san&.value&.[](/URI:(.+)/, 1)
         default.with(
-          certificate: cert,
-          private_key: key,
-          security_mode: SecurityMode::SIGN_AND_ENCRYPT,
+          certificate:     cert,
+          private_key:     key,
+          security_mode:   SecurityMode::SIGN_AND_ENCRYPT,
           application_uri: uri || 'urn:scada:server'
         )
       end

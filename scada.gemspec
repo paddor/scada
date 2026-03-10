@@ -8,6 +8,7 @@ Gem::Specification.new do |s|
   s.authors     = ["roadster"]
   s.license     = "MIT"
   s.required_ruby_version = ">= 3.2"
+  s.metadata["rubygems_mfa_required"] = "true"
 
   s.files = Dir["lib/**/*.rb", "ext/**/*.{c,h,rb}", "LICENSE", "README.md"]
   s.extensions = ["ext/scada/extconf.rb"]

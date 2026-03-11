@@ -5,11 +5,14 @@ describe "Methods" do
 
   CALLED_WITH = [nil]
 
+  LAST_REQUEST = [nil]
+
   @fixture = ScadaHelper.start_shared_server do |s|
     s.add_method('ns=1;s=greet',
       display_name: 'Greet',
       input: [{ name: 'name', type: :string }],
       output: [{ name: 'greeting', type: :string }]) do |req|
+        LAST_REQUEST[0] = req
         "Hello, #{req[0]}!"
       end
 
@@ -53,6 +56,31 @@ describe "Methods" do
           raise "boom"
         end
       end
+
+    s.add_method('ns=1;s=raise_invalid_arg',
+      display_name: 'RaiseInvalidArg') do |req|
+        raise Scada::Error::BadInvalidArgument
+      end
+
+    s.add_method('ns=1;s=raise_out_of_range',
+      display_name: 'RaiseOutOfRange') do |req|
+        raise Scada::Error::BadOutOfRange
+      end
+
+    s.add_method('ns=1;s=raise_type_mismatch',
+      display_name: 'RaiseTypeMismatch') do |req|
+        raise Scada::Error::BadTypeMismatch
+      end
+
+    s.add_method('ns=1;s=raise_runtime',
+      display_name: 'RaiseRuntime') do |req|
+        raise RuntimeError, "boom"
+      end
+
+    s.add_method('ns=1;s=raise_argument',
+      display_name: 'RaiseArgument') do |req|
+        raise ArgumentError
+      end
   end
 
   it "calls a simple method with string input/output" do
@@ -91,19 +119,70 @@ describe "Methods" do
 
   it "returns an error when async method raises immediately" do
     with_client(fixture) do |client|
-      err = assert_raises(Scada::Error) do
+      assert_raises(Scada::Error::BadInternalError) do
         client.call('ns=1;s=async_fail').wait
       end
-      assert_match(/BadInternalError|0x80020000/i, err.message)
     end
   end
 
   it "returns an error when deferred async method raises" do
     with_client(fixture) do |client|
-      err = assert_raises(Scada::Error) do
+      assert_raises(Scada::Error::BadInternalError) do
         client.call('ns=1;s=async_fail_deferred').wait
       end
-      assert_match(/BadInternalError|0x80020000/i, err.message)
+    end
+  end
+
+  it "passes a MethodRequest with correct accessors" do
+    with_client(fixture) do |client|
+      LAST_REQUEST[0] = nil
+      client.call('ns=1;s=greet', 'Test').wait
+      req = LAST_REQUEST[0]
+      assert_instance_of Scada::MethodRequest, req
+      assert_equal ['Test'], req.input_arguments
+      assert_instance_of Scada::NodeId, req.session_id
+      assert_instance_of Scada::NodeId, req.method_id
+      assert_instance_of Scada::NodeId, req.object_node_id
+    end
+  end
+
+  it "maps Scada::Error::BadInvalidArgument to BadInvalidArgument status" do
+    with_client(fixture) do |client|
+      assert_raises(Scada::Error::BadInvalidArgument) do
+        client.call('ns=1;s=raise_invalid_arg').wait
+      end
+    end
+  end
+
+  it "maps Scada::Error::BadOutOfRange to BadOutOfRange status" do
+    with_client(fixture) do |client|
+      assert_raises(Scada::Error::BadOutOfRange) do
+        client.call('ns=1;s=raise_out_of_range').wait
+      end
+    end
+  end
+
+  it "maps Scada::Error::BadTypeMismatch to BadTypeMismatch status" do
+    with_client(fixture) do |client|
+      assert_raises(Scada::Error::BadTypeMismatch) do
+        client.call('ns=1;s=raise_type_mismatch').wait
+      end
+    end
+  end
+
+  it "maps RuntimeError to BadInternalError status" do
+    with_client(fixture) do |client|
+      assert_raises(Scada::Error::BadInternalError) do
+        client.call('ns=1;s=raise_runtime').wait
+      end
+    end
+  end
+
+  it "maps ArgumentError to BadInternalError status" do
+    with_client(fixture) do |client|
+      assert_raises(Scada::Error::BadInternalError) do
+        client.call('ns=1;s=raise_argument').wait
+      end
     end
   end
 end

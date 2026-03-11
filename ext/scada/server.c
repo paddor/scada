@@ -461,6 +461,9 @@ static VALUE server_add_data_source_variable(VALUE self, VALUE rb_nid, VALUE rb_
 }
 
 /* Method callback support */
+static VALUE rb_cMethodRequest = Qundef;
+static ID id_status_code;
+
 typedef struct {
     VALUE proc;
     VALUE server_obj;
@@ -474,18 +477,59 @@ typedef struct {
     size_t output_size;
     /* Output type symbol, stored at registration */
     VALUE output_type_sym;
+    /* Per-invocation context from open62541 */
+    const UA_NodeId *session_id;
+    const UA_NodeId *method_id;
+    const UA_NodeId *object_node_id;
+    UA_StatusCode call_status;
 } ScadaMethodCtx;
+
+typedef struct {
+    ScadaMethodCtx *ctx;
+    VALUE request;
+} MethodCallArgs;
+
+static VALUE method_call_proc(VALUE arg) {
+    MethodCallArgs *a = (MethodCallArgs *)arg;
+    return rb_funcall(a->ctx->proc, rb_intern("call"), 1, a->request);
+}
 
 static void *method_call_with_gvl(void *arg) {
     ScadaMethodCtx *ctx = arg;
+
+    /* Lazy-resolve MethodRequest class */
+    if (rb_cMethodRequest == Qundef)
+        rb_cMethodRequest = rb_const_get(rb_mScada, rb_intern("MethodRequest"));
 
     /* Build input array (must be inside GVL) */
     VALUE input_args = rb_ary_new_capa(ctx->input_size);
     for (size_t i = 0; i < ctx->input_size; i++)
         rb_ary_push(input_args, scada_variant_to_ruby(&ctx->input[i]));
 
-    /* Call Ruby proc */
-    ctx->result = rb_funcall(ctx->proc, rb_intern("call"), 1, input_args);
+    /* Build MethodRequest */
+    VALUE rb_sid = scada_node_id_wrap(*ctx->session_id);
+    VALUE rb_mid = scada_node_id_wrap(*ctx->method_id);
+    VALUE rb_oid = scada_node_id_wrap(*ctx->object_node_id);
+    VALUE request = rb_funcall(rb_cMethodRequest, rb_intern("new"), 4,
+                               input_args, rb_sid, rb_mid, rb_oid);
+
+    /* Call Ruby proc with rb_protect to catch exceptions */
+    MethodCallArgs mca = { ctx, request };
+    int state = 0;
+    ctx->result = rb_protect(method_call_proc, (VALUE)&mca, &state);
+
+    if (state) {
+        VALUE exc = rb_errinfo();
+        rb_set_errinfo(Qnil);
+        if (rb_obj_is_kind_of(exc, rb_cError)) {
+            VALUE code = rb_ivar_get(rb_obj_class(exc), id_status_code);
+            ctx->call_status = NIL_P(code) ? UA_STATUSCODE_BADINTERNALERROR
+                                           : (UA_StatusCode)NUM2UINT(code);
+        } else {
+            ctx->call_status = UA_STATUSCODE_BADINTERNALERROR;
+        }
+        return NULL;
+    }
 
     /* Check for async result (responds to #wait) */
     ctx->is_async = (!NIL_P(ctx->result) &&
@@ -515,8 +559,8 @@ static UA_StatusCode method_callback(UA_Server *server,
     size_t inputSize, const UA_Variant *input,
     size_t outputSize, UA_Variant *output) {
 
-    (void)sessionId; (void)sessionContext;
-    (void)methodId; (void)objectId; (void)objectContext;
+    (void)sessionContext;
+    (void)objectContext;
 
     ScadaMethodCtx *ctx = (ScadaMethodCtx *)methodContext;
     if (!ctx || NIL_P(ctx->proc))
@@ -529,11 +573,15 @@ static UA_StatusCode method_callback(UA_Server *server,
     ctx->output = output;
     ctx->output_size = outputSize;
     ctx->is_async = 0;
+    ctx->session_id = sessionId;
+    ctx->method_id = methodId;
+    ctx->object_node_id = objectId;
+    ctx->call_status = UA_STATUSCODE_GOOD;
 
     rb_thread_call_with_gvl(method_call_with_gvl, ctx);
 
     return ctx->is_async ? UA_STATUSCODE_GOODCOMPLETESASYNCHRONOUSLY
-                         : UA_STATUSCODE_GOOD;
+                         : ctx->call_status;
 }
 
 static VALUE server_add_method_node(VALUE self, VALUE rb_nid, VALUE rb_display_name,
@@ -588,6 +636,10 @@ static VALUE server_add_method_node(VALUE self, VALUE rb_nid, VALUE rb_display_n
     ctx->output = NULL;
     ctx->output_size = 0;
     ctx->output_type_sym = Qnil;
+    ctx->session_id = NULL;
+    ctx->method_id = NULL;
+    ctx->object_node_id = NULL;
+    ctx->call_status = UA_STATUSCODE_GOOD;
     rb_ary_push(s->callback_procs, rb_proc);
 
     /* Store output type symbol for variant conversion */
@@ -680,6 +732,7 @@ static VALUE server_close(VALUE self) {
 }
 
 void Init_scada_server(VALUE rb_mScada) {
+    id_status_code = rb_intern("@status_code");
     rb_cServer = rb_define_class_under(rb_mScada, "Server", rb_cObject);
     rb_define_alloc_func(rb_cServer, server_alloc);
     rb_define_method(rb_cServer, "initialize", server_initialize, -1);

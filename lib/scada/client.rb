@@ -178,8 +178,7 @@ module Scada
     def check_async_status!(status_code)
       return if status_code == 0
 
-      status = StatusCode.new(status_code)
-      raise Scada::Error, "OPC UA error: #{status}"
+      Scada::Error.raise_for_code(status_code)
     end
 
     def raise_on_bad_status!(status, prefix)

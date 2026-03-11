@@ -3,23 +3,28 @@ require_relative "../test_helper"
 describe "Methods" do
   include ScadaHelper
 
-  CALLED_WITH = [nil]
+  CALLED_WITH = Queue.new
+  LAST_REQUEST = Queue.new
 
-  LAST_REQUEST = [nil]
+  before do
+    CALLED_WITH.pop until CALLED_WITH.empty?
+    LAST_REQUEST.pop until LAST_REQUEST.empty?
+  end
 
   @fixture = ScadaHelper.start_shared_server do |s|
     s.add_method('ns=1;s=greet',
       display_name: 'Greet',
       input: [{ name: 'name', type: :string }],
       output: [{ name: 'greeting', type: :string }]) do |req|
-        LAST_REQUEST[0] = req
+        LAST_REQUEST.push(req)
         "Hello, #{req[0]}!"
       end
 
     s.add_method('ns=1;s=notify',
       display_name: 'Notify',
       input: [{ name: 'msg', type: :string }]) do |req|
-        CALLED_WITH[0] = req[0]; nil
+        CALLED_WITH.push(req[0])
+        nil
       end
 
     s.add_method('ns=1;s=double_it',
@@ -92,10 +97,9 @@ describe "Methods" do
 
   it "calls a method with no output" do
     with_client(fixture) do |client|
-      CALLED_WITH[0] = nil
       result = client.call('ns=1;s=notify', 'test').wait
       assert_nil result
-      assert_equal 'test', CALLED_WITH[0]
+      assert_equal 'test', CALLED_WITH.pop
     end
   end
 
@@ -135,9 +139,8 @@ describe "Methods" do
 
   it "passes a MethodRequest with correct accessors" do
     with_client(fixture) do |client|
-      LAST_REQUEST[0] = nil
       client.call('ns=1;s=greet', 'Test').wait
-      req = LAST_REQUEST[0]
+      req = LAST_REQUEST.pop
       assert_instance_of Scada::MethodRequest, req
       assert_equal ['Test'], req.input_arguments
       assert_instance_of Scada::NodeId, req.session_id

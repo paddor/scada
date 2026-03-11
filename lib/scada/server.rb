@@ -2,8 +2,6 @@ require 'async'
 
 module Scada
   class Server
-    TICK = 0.02
-
     CONFIG_FIELDS = %i[
       port application_name application_uri product_uri
       certificate private_key trust_list
@@ -58,18 +56,14 @@ module Scada
       end
     end
 
+    # Minimum yield interval for the event loop.
+    TICK = 0.001
+
     def run
       _run_startup
-      run_next = Async::Clock.now
       loop do
-        run_next += TICK
         _run_iterate
-        remaining = run_next - Async::Clock.now
-        if remaining > 0
-          sleep(remaining)
-        else
-          Async::Task.current.yield
-        end
+        sleep TICK
       end
     ensure
       _run_shutdown

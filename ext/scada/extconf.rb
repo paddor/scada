@@ -24,6 +24,11 @@ else
   warn "*** mbedtls not found, building without encryption support ***"
 end
 
+# Allow overriding UA_MAXTIMEOUT (e.g. for faster tests)
+if (v = ENV["UA_MAXTIMEOUT"])
+  $CFLAGS << " -DUA_MAXTIMEOUT=#{v}"
+end
+
 # Catch callback signature mismatches at compile time
 $CFLAGS << " -Werror=incompatible-pointer-types"
 $CFLAGS << " -Werror=implicit-function-declaration"

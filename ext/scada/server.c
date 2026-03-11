@@ -214,18 +214,40 @@ static void *server_iterate_nogvl(void *arg) {
     return NULL;
 }
 
-static VALUE server_run_iterate(VALUE self) {
+static VALUE server_run_iterate(int argc, VALUE *argv, VALUE self) {
     GET_SERVER(self, s);
-    ServerIterateArgs args = { s->server, UA_FALSE, s->config };
-    rb_thread_call_without_gvl(server_iterate_nogvl, &args, RUBY_UBF_IO, NULL);
+    VALUE rb_wait;
+    rb_scan_args(argc, argv, "01", &rb_wait);
+    UA_Boolean wait = RTEST(rb_wait) ? UA_TRUE : UA_FALSE;
+    ServerIterateArgs args = { s->server, wait, s->config };
+    rb_thread_call_without_gvl(server_iterate_nogvl, &args,
+                               RUBY_UBF_IO, NULL);
     return Qnil;
+}
+
+typedef struct {
+    UA_Server *server;
+    UA_ServerConfig *config;
+    UA_StatusCode rc;
+} ServerShutdownArgs;
+
+static void *server_shutdown_nogvl(void *arg) {
+    ServerShutdownArgs *a = arg;
+    if (a->config && a->config->logging)
+        scada_logger_set_gvl(a->config->logging, 0);
+    a->rc = UA_Server_run_shutdown(a->server);
+    if (a->config && a->config->logging)
+        scada_logger_set_gvl(a->config->logging, 1);
+    return NULL;
 }
 
 static VALUE server_run_shutdown(VALUE self) {
     GET_SERVER(self, s);
     s->running = UA_FALSE;
-    UA_StatusCode rc = UA_Server_run_shutdown(s->server);
-    scada_check_status(rc);
+    ServerShutdownArgs args = { s->server, s->config, UA_STATUSCODE_GOOD };
+    rb_thread_call_without_gvl(server_shutdown_nogvl, &args,
+                               RUBY_UBF_IO, NULL);
+    scada_check_status(args.rc);
     return Qnil;
 }
 
@@ -598,7 +620,7 @@ void Init_scada_server(VALUE rb_mScada) {
     rb_define_alloc_func(rb_cServer, server_alloc);
     rb_define_method(rb_cServer, "initialize", server_initialize, -1);
     rb_define_method(rb_cServer, "_run_startup", server_run_startup, 0);
-    rb_define_method(rb_cServer, "_run_iterate", server_run_iterate, 0);
+    rb_define_method(rb_cServer, "_run_iterate", server_run_iterate, -1);
     rb_define_method(rb_cServer, "_run_shutdown", server_run_shutdown, 0);
     rb_define_method(rb_cServer, "_add_variable_node", server_add_variable_node, 6);
     rb_define_method(rb_cServer, "_write_value", server_write_value, 3);

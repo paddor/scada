@@ -10,6 +10,14 @@ Rake::TestTask.new(:test) do |t|
   t.pattern = "test/**/*_test.rb"
 end
 
+desc "Compile with fast shutdown and run tests"
+task fast_test: [:fast_compile, :test]
+
+task :fast_compile do
+  ENV["UA_MAXTIMEOUT"] = "1"
+  Rake::Task[:compile].invoke
+end
+
 task default: [:compile, :test]
 
 desc "Update open62541 amalgamation to a given tag (default: latest release)"

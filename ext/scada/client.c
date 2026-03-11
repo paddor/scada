@@ -6,6 +6,7 @@ typedef struct {
     VALUE callback_procs;
     char *endpoint_url;
     VALUE pending;  /* Hash { request_id => [condition, result] } */
+    int freeing;    /* set during GC to suppress callbacks */
 } ScadaClient;
 
 static void client_mark(void *ptr) {
@@ -27,6 +28,9 @@ static void client_free(void *ptr) {
         if (config && config->eventLoop &&
             !config->externalEventLoop)
             config->eventLoop->stop(config->eventLoop);
+        /* Suppress async callbacks during UA_Client_delete —
+         * they would try to allocate Ruby objects during GC. */
+        c->freeing = 1;
         UA_Client_delete(c->client);
     }
     if (c->endpoint_url) xfree(c->endpoint_url);
@@ -187,6 +191,9 @@ static VALUE client_initialize(int argc, VALUE *argv, VALUE self) {
         if (!c->client) rb_raise(rb_eRuntimeError, "Failed to create UA_Client");
     }
 
+    /* Store back-pointer so async callbacks can check the freeing flag */
+    UA_Client_getConfig(c->client)->clientContext = c;
+
     return self;
 }
 
@@ -255,10 +262,15 @@ static void *client_iterate_nogvl(void *arg) {
     return NULL;
 }
 
-static VALUE client_run_iterate(VALUE self) {
+static VALUE client_run_iterate(int argc, VALUE *argv, VALUE self) {
     GET_CLIENT(self, c);
-    ClientIterateArgs args = { c->client, 0 };
-    rb_thread_call_without_gvl(client_iterate_nogvl, &args, RUBY_UBF_IO, NULL);
+    VALUE rb_timeout;
+    rb_scan_args(argc, argv, "01", &rb_timeout);
+    UA_UInt32 timeout = NIL_P(rb_timeout) ? 0
+                                          : (UA_UInt32)NUM2UINT(rb_timeout);
+    ClientIterateArgs args = { c->client, timeout };
+    rb_thread_call_without_gvl(client_iterate_nogvl, &args,
+                               RUBY_UBF_IO, NULL);
     return Qnil;
 }
 
@@ -348,9 +360,20 @@ static void *signal_pending_with_gvl(void *arg) {
 
 /* C callbacks that fire during run_iterate (without GVL) */
 
+/* Check if the client is being freed (GC phase) — if so, skip Ruby calls */
+static int client_is_freeing(UA_Client *client) {
+    UA_ClientConfig *config = UA_Client_getConfig(client);
+    if (config && config->clientContext) {
+        ScadaClient *c = (ScadaClient *)config->clientContext;
+        return c->freeing;
+    }
+    return 0;
+}
+
 static void read_async_cb(UA_Client *client, void *userdata,
                            UA_UInt32 requestId, UA_ReadResponse *response) {
-    (void)client; (void)requestId;
+    (void)requestId;
+    if (client_is_freeing(client)) return;
     AsyncPending *p = (AsyncPending *)userdata;
     GVLSignalArgs args = { p, response, NULL, NULL, 0 };
     rb_thread_call_with_gvl(signal_pending_with_gvl, &args);
@@ -358,7 +381,8 @@ static void read_async_cb(UA_Client *client, void *userdata,
 
 static void write_async_cb(UA_Client *client, void *userdata,
                             UA_UInt32 requestId, UA_WriteResponse *response) {
-    (void)client; (void)requestId;
+    (void)requestId;
+    if (client_is_freeing(client)) return;
     AsyncPending *p = (AsyncPending *)userdata;
     GVLSignalArgs args = { p, NULL, response, NULL, 1 };
     rb_thread_call_with_gvl(signal_pending_with_gvl, &args);
@@ -366,7 +390,8 @@ static void write_async_cb(UA_Client *client, void *userdata,
 
 static void call_async_cb(UA_Client *client, void *userdata,
                            UA_UInt32 requestId, UA_CallResponse *response) {
-    (void)client; (void)requestId;
+    (void)requestId;
+    if (client_is_freeing(client)) return;
     AsyncPending *p = (AsyncPending *)userdata;
     GVLSignalArgs args = { p, NULL, NULL, response, 2 };
     rb_thread_call_with_gvl(signal_pending_with_gvl, &args);
@@ -598,8 +623,8 @@ static VALUE client_namespace_get_index(VALUE self, VALUE rb_uri) {
     return UINT2NUM(nsIndex);
 }
 
-/* v1.5: local namespace index lookup from the client's mapping table
- * (populated automatically after connect) */
+/* Local namespace index lookup from the client's mapping table
+ * (populated automatically after connect). */
 static VALUE client_get_namespace_index(VALUE self, VALUE rb_uri) {
     GET_CLIENT(self, c);
     UA_UInt16 nsIndex;
@@ -636,7 +661,8 @@ static void *create_sub_signal_gvl(void *arg) {
 static void create_sub_cb_nogvl(UA_Client *client, void *userdata,
                                  UA_UInt32 requestId,
                                  UA_CreateSubscriptionResponse *response) {
-    (void)client; (void)requestId;
+    (void)requestId;
+    if (client_is_freeing(client)) return;
     AsyncPending *p = (AsyncPending *)userdata;
     CreateSubGVLArgs args = { p, response };
     rb_thread_call_with_gvl(create_sub_signal_gvl, &args);
@@ -689,7 +715,8 @@ static void *data_change_with_gvl(void *arg) {
 
 static void data_change_notification_cb(UA_Client *client, UA_UInt32 subId,
     void *subContext, UA_UInt32 monId, void *monContext, UA_DataValue *value) {
-    (void)client; (void)subId; (void)subContext; (void)monId;
+    (void)subId; (void)subContext; (void)monId;
+    if (client_is_freeing(client)) return;
     MonitorCtx *ctx = (MonitorCtx *)monContext;
     if (!ctx || NIL_P(ctx->proc)) return;
     DataChangeGVLArgs args = { ctx, value };
@@ -724,7 +751,8 @@ static void *create_mon_signal_gvl(void *arg) {
 static void create_mon_cb(UA_Client *client, void *userdata,
                            UA_UInt32 requestId,
                            UA_CreateMonitoredItemsResponse *response) {
-    (void)client; (void)requestId;
+    (void)requestId;
+    if (client_is_freeing(client)) return;
     AsyncPending *p = (AsyncPending *)userdata;
     CreateMonGVLArgs args = { p, response };
     rb_thread_call_with_gvl(create_mon_signal_gvl, &args);
@@ -836,7 +864,8 @@ static void *event_with_gvl(void *arg) {
 static void event_notification_cb(UA_Client *client, UA_UInt32 subId,
     void *subContext, UA_UInt32 monId, void *monContext,
     const UA_KeyValueMap eventFields) {
-    (void)client; (void)subId; (void)subContext; (void)monId;
+    (void)subId; (void)subContext; (void)monId;
+    if (client_is_freeing(client)) return;
     MonitorCtx *ctx = (MonitorCtx *)monContext;
     if (!ctx || NIL_P(ctx->proc)) return;
 
@@ -958,7 +987,7 @@ void Init_scada_client(VALUE rb_mScada) {
     rb_define_method(rb_cClient, "_connect_async", client_connect_async, 0);
     rb_define_method(rb_cClient, "_get_state", client_get_state, 0);
     rb_define_method(rb_cClient, "_have_namespaces?", client_have_namespaces, 0);
-    rb_define_method(rb_cClient, "_run_iterate", client_run_iterate, 0);
+    rb_define_method(rb_cClient, "_run_iterate", client_run_iterate, -1);
     rb_define_method(rb_cClient, "_read_async", client_read_async, 3);
     rb_define_method(rb_cClient, "_write_async", client_write_async, 4);
     rb_define_method(rb_cClient, "_call_async", client_call_async, 3);

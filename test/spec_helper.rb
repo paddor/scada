@@ -6,13 +6,60 @@ QUIET = !ARGV.include?("--verbose")
 SILENT_LOGGER = :silent
 
 module ScadaHelper
+  SharedServer = Data.define(:server, :port)
+
+  # Start a shared server in a background Thread.
+  # The server persists for the entire test run. Use this at the
+  # describe-block level to share one server across many tests.
+  def self.start_shared_server(config: nil, &setup)
+    port = rand(30_000..60_000)
+    cfg = config || Scada::Server::Config.default
+    cfg = cfg.with(port: port)
+    cfg = cfg.with(logger: SILENT_LOGGER) if QUIET && cfg.logger.nil?
+    server = Scada::Server.new(config: cfg)
+    setup.call(server) if setup
+    thread = Thread.new { server.run }
+    thread.abort_on_exception = true
+    sleep 0.02 # let the server bind
+    Minitest.after_run { thread.kill; thread.join(1) }
+    SharedServer.new(server: server, port: port)
+  end
+
+  # Create a short-lived server for one test (old pattern).
   def with_server(config: nil)
-    port = rand(40_000..50_000)
+    port = rand(30_000..60_000)
     cfg = config || Scada::Server::Config.default
     cfg = cfg.with(port: port)
     cfg = cfg.with(logger: SILENT_LOGGER) if QUIET && cfg.logger.nil?
     server = Scada::Server.new(config: cfg)
     yield server, port
+  end
+
+  # Connect a client to a SharedServer, run its event loop,
+  # and yield it. Cleans up automatically.
+  def with_client(fixture, config: nil)
+    Sync do |task|
+      client = new_client(
+        "opc.tcp://localhost:#{fixture.port}", config: config
+      )
+      client.connect
+      client_task = task.async { client.run }
+      yield client
+    ensure
+      client_task&.stop
+    end
+  end
+
+  # Access the shared server fixture stored on the describe class.
+  # Walks up the class hierarchy so nested describe blocks inherit it.
+  def fixture
+    klass = self.class
+    while klass
+      f = klass.instance_variable_get(:@fixture)
+      return f if f
+      klass = klass.superclass
+    end
+    nil
   end
 
   def new_client(url, config: nil)

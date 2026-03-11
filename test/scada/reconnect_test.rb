@@ -17,7 +17,7 @@ describe 'Auto-reconnect' do
   def wait_for_session(client, timeout: 5.0)
     deadline = Async::Clock.now + timeout
     loop do
-      sleep 0.1
+      sleep 0.01
       s = client.state
       return true if s.session ==
                       Scada::Client::SESSION_ACTIVATED
@@ -78,7 +78,7 @@ describe 'Auto-reconnect' do
 
       # Kill the server
       server_task.stop
-      sleep 0.5
+      sleep 0.1
 
       # Client should notice the disconnect
       s = client.state

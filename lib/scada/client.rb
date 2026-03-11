@@ -50,7 +50,9 @@ module Scada
       end
     end
 
-    TICK = 0.05
+    # Minimum yield interval for the event loop.
+    # Allows other fibers to run without busy-looping.
+    TICK = 0.001
 
     # Session states from open62541
     SESSION_ACTIVATED = 4
@@ -81,17 +83,10 @@ module Scada
     end
 
     def run
-      run_next = Async::Clock.now
       loop do
-        run_next += TICK
         _run_iterate
         maybe_reconnect
-        remaining = run_next - Async::Clock.now
-        if remaining > 0
-          sleep(remaining)
-        else
-          Async::Task.current.yield
-        end
+        sleep TICK
       end
     end
 

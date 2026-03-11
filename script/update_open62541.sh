@@ -33,7 +33,9 @@ echo "==> Copying amalgamation to $DEPS_DIR"
 cp open62541.c "$DEPS_DIR/open62541.c"
 cp open62541.h "$DEPS_DIR/open62541.h"
 
-echo "==> Generating headers"
-ruby "$SCRIPT_DIR/generate_headers.rb" "$WORK_DIR/open62541"
+echo "==> Copying schema CSVs"
+mkdir -p "$ROOT_DIR/data"
+cp "$WORK_DIR/open62541/tools/schema/StatusCode.csv" "$ROOT_DIR/data/"
+cp "$WORK_DIR/open62541/tools/schema/NodeIds.csv" "$ROOT_DIR/data/"
 
 echo "==> Done. open62541 updated to $TAG"

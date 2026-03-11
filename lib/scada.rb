@@ -6,9 +6,16 @@ require_relative 'scada/data_value'
 require_relative 'scada/status'
 require_relative 'scada/event'
 require_relative 'scada/node_info'
+require_relative 'scada/method_request'
 
 # Native extension
 require_relative 'scada/scada'
+
+# Error subclasses from CSV (must load after native ext defines Scada::Error)
+require_relative 'scada/errors'
+
+# NS0 and DataType constants from CSV (needs NodeId from native ext)
+require_relative 'scada/ns0'
 
 # Pure-Ruby wrappers
 require_relative 'scada/node_id'

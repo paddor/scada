@@ -1,4 +1,4 @@
-require_relative "../spec_helper"
+require_relative "../test_helper"
 require "openssl"
 
 module EncryptionHelper
@@ -64,7 +64,9 @@ describe "Encryption" do
         assert_in_delta 42.0, dv.value, 0.001
       ensure
         client_task&.stop
+        client&.close
         server_task&.stop
+        server&.close
       end
     end
   end
@@ -102,7 +104,9 @@ describe "Encryption" do
         assert_in_delta 99.0, dv.value, 0.001
       ensure
         client_task&.stop
+        client&.close
         server_task&.stop
+        server&.close
       end
     end
   end
@@ -132,7 +136,9 @@ describe "Encryption" do
         assert_equal 7, dv.value
       ensure
         client_task&.stop
+        client&.close
         server_task&.stop
+        server&.close
       end
     end
   end
@@ -153,7 +159,9 @@ describe "Encryption" do
         assert_equal "hello", dv.value
       ensure
         client_task&.stop
+        client&.close
         server_task&.stop
+        server&.close
       end
     end
   end

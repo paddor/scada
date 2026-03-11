@@ -1,4 +1,4 @@
-require_relative '../spec_helper'
+require_relative '../test_helper'
 
 describe 'Connectivity check interval' do
   include ScadaHelper

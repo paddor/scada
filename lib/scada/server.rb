@@ -63,6 +63,7 @@ module Scada
       _run_startup
       loop do
         _run_iterate
+        _drain_async_completions
         sleep TICK
       end
     ensure
@@ -152,6 +153,23 @@ module Scada
     end
 
     private
+
+    def _schedule_async_completion(task, output_ptr, output_type)
+      (@_pending_async_completions ||= []) << [task, output_ptr, output_type]
+    end
+
+    def _drain_async_completions
+      return unless defined?(@_pending_async_completions) && @_pending_async_completions&.any?
+      @_pending_async_completions.each do |task, output_ptr, output_type|
+        Async do
+          result = task.wait
+          _commit_async_method_result(output_ptr, result, output_type)
+        rescue
+          _fail_async_method_result(output_ptr)
+        end
+      end
+      @_pending_async_completions.clear
+    end
 
     def parse_node_id(node_id)
       if node_id.is_a?(NodeId)

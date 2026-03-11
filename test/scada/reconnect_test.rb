@@ -1,4 +1,4 @@
-require_relative '../spec_helper'
+require_relative '../test_helper'
 
 describe 'Auto-reconnect' do
   include ScadaHelper
@@ -49,7 +49,9 @@ describe 'Auto-reconnect' do
         refute s.status.uncertain?
       ensure
         client_task&.stop
+        client&.close
         server_task&.stop
+        server&.close
       end
     end
   end
@@ -109,7 +111,10 @@ describe 'Auto-reconnect' do
       assert_in_delta 1.0, dv.value, 0.01
     ensure
       client_task&.stop
+      client&.close
       server_task&.stop
+      server1&.close
+      server2&.close
     end
   end
 end

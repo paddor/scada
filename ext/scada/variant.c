@@ -163,7 +163,7 @@ void scada_ruby_to_variant(VALUE rb_val, VALUE rb_type_sym, UA_Variant *var) {
         UA_String_clear(&val);
     } else if (type == &UA_TYPES[UA_TYPES_DATETIME]) {
         double epoch = NUM2DBL(rb_funcall(rb_val, rb_intern("to_f"), 0));
-        UA_DateTime val = UA_DateTime_fromUnixTime((UA_Int64)epoch);
+        UA_DateTime val = UA_DATETIME_UNIX_EPOCH + (UA_Int64)(epoch * 1e7);
         UA_Variant_setScalarCopy(var, &val, type);
     } else if (type == &UA_TYPES[UA_TYPES_BYTESTRING]) {
         StringValue(rb_val);

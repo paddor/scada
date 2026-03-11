@@ -1,4 +1,4 @@
-require_relative "../spec_helper"
+require_relative "../test_helper"
 
 describe Scada::Client do
   include ScadaHelper
@@ -66,6 +66,25 @@ describe Scada::Client do
           client.read('ns=1;s=nonexistent').wait
         end
       end
+    end
+  end
+
+  describe "#close" do
+    it "cleans up via GC without explicit #close" do
+      Sync do |task|
+        client = new_client("opc.tcp://localhost:#{fixture.port}")
+        client.connect
+        client_task = task.async { client.run }
+
+        dv = client.read('ns=1;s=temp').wait
+        assert_equal 22.5, dv.value
+
+        client_task.stop
+        client = nil # drop the only reference
+      end
+
+      GC.start
+      GC.compact
     end
   end
 end

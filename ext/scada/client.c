@@ -978,6 +978,26 @@ static VALUE client_add_monitored_event(VALUE self, VALUE rb_sub_id,
     return Qnil;
 }
 
+static VALUE client_close(VALUE self) {
+    GET_CLIENT(self, c);
+    if (c->client) {
+        UA_ClientConfig *config = UA_Client_getConfig(c->client);
+        if (config && config->logging)
+            scada_deactivate_logger(config->logging);
+        if (config && config->eventLoop &&
+            !config->externalEventLoop)
+            config->eventLoop->stop(config->eventLoop);
+        c->freeing = 1;
+        UA_Client_delete(c->client);
+        c->client = NULL;
+    }
+    if (c->endpoint_url) {
+        xfree(c->endpoint_url);
+        c->endpoint_url = NULL;
+    }
+    return Qnil;
+}
+
 /* --- Init --- */
 
 void Init_scada_client(VALUE rb_mScada) {
@@ -996,4 +1016,5 @@ void Init_scada_client(VALUE rb_mScada) {
     rb_define_method(rb_cClient, "_create_subscription_async", client_create_subscription_async, 2);
     rb_define_method(rb_cClient, "_add_monitored_data_change", client_add_monitored_data_change, 5);
     rb_define_method(rb_cClient, "_add_monitored_event", client_add_monitored_event, 5);
+    rb_define_method(rb_cClient, "close", client_close, 0);
 }

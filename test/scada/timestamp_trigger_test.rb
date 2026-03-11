@@ -1,4 +1,4 @@
-require_relative "../spec_helper"
+require_relative "../test_helper"
 
 describe "Timestamp trigger (issue #5882)" do
   include ScadaHelper

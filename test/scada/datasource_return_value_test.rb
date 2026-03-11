@@ -1,4 +1,4 @@
-require_relative "../spec_helper"
+require_relative "../test_helper"
 
 # Reproduction test for https://github.com/open62541/open62541/issues/7492
 describe "UA_Server_addDataSourceVariableNode return value (issue #7492)" do

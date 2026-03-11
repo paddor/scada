@@ -464,13 +464,47 @@ static VALUE server_add_data_source_variable(VALUE self, VALUE rb_nid, VALUE rb_
 typedef struct {
     VALUE proc;
     VALUE server_obj;
-    VALUE input_args;
     VALUE result;
+    int is_async;
+    /* Per-invocation (set before GVL trampoline) */
+    UA_Server *ua_server;
+    const UA_Variant *input;
+    size_t input_size;
+    UA_Variant *output;
+    size_t output_size;
+    /* Output type symbol, stored at registration */
+    VALUE output_type_sym;
 } ScadaMethodCtx;
 
 static void *method_call_with_gvl(void *arg) {
     ScadaMethodCtx *ctx = arg;
-    ctx->result = rb_funcall(ctx->proc, rb_intern("call"), 1, ctx->input_args);
+
+    /* Build input array (must be inside GVL) */
+    VALUE input_args = rb_ary_new_capa(ctx->input_size);
+    for (size_t i = 0; i < ctx->input_size; i++)
+        rb_ary_push(input_args, scada_variant_to_ruby(&ctx->input[i]));
+
+    /* Call Ruby proc */
+    ctx->result = rb_funcall(ctx->proc, rb_intern("call"), 1, input_args);
+
+    /* Check for async result (responds to #wait) */
+    ctx->is_async = (!NIL_P(ctx->result) &&
+                     rb_respond_to(ctx->result, rb_intern("wait")));
+
+    if (ctx->is_async) {
+        /* Schedule async watcher task via Ruby */
+        rb_funcall(ctx->server_obj,
+                   rb_intern("_schedule_async_completion"), 3,
+                   ctx->result,
+                   ULL2NUM((uintptr_t)ctx->output),
+                   ctx->output_type_sym);
+    } else if (ctx->output_size > 0 && !NIL_P(ctx->result)
+               && !NIL_P(ctx->output_type_sym)) {
+        /* Sync: convert using declared output type */
+        scada_ruby_to_variant(ctx->result, ctx->output_type_sym,
+                              &ctx->output[0]);
+    }
+
     return NULL;
 }
 
@@ -481,39 +515,25 @@ static UA_StatusCode method_callback(UA_Server *server,
     size_t inputSize, const UA_Variant *input,
     size_t outputSize, UA_Variant *output) {
 
-    (void)server; (void)sessionId; (void)sessionContext;
+    (void)sessionId; (void)sessionContext;
     (void)methodId; (void)objectId; (void)objectContext;
 
     ScadaMethodCtx *ctx = (ScadaMethodCtx *)methodContext;
     if (!ctx || NIL_P(ctx->proc))
         return UA_STATUSCODE_BADINTERNALERROR;
 
-    /* Build input array */
-    ctx->input_args = rb_ary_new_capa(inputSize);
-    for (size_t i = 0; i < inputSize; i++)
-        rb_ary_push(ctx->input_args, scada_variant_to_ruby(&input[i]));
+    /* Set per-invocation fields */
+    ctx->ua_server = server;
+    ctx->input = input;
+    ctx->input_size = inputSize;
+    ctx->output = output;
+    ctx->output_size = outputSize;
+    ctx->is_async = 0;
 
     rb_thread_call_with_gvl(method_call_with_gvl, ctx);
 
-    /* Convert result to output */
-    if (outputSize > 0 && !NIL_P(ctx->result)) {
-        if (TYPE(ctx->result) == T_STRING) {
-            UA_String val = UA_STRING_ALLOC(StringValueCStr(ctx->result));
-            UA_Variant_setScalarCopy(&output[0], &val, &UA_TYPES[UA_TYPES_STRING]);
-            UA_String_clear(&val);
-        } else if (TYPE(ctx->result) == T_FLOAT) {
-            UA_Double val = NUM2DBL(ctx->result);
-            UA_Variant_setScalarCopy(&output[0], &val, &UA_TYPES[UA_TYPES_DOUBLE]);
-        } else if (FIXNUM_P(ctx->result) || TYPE(ctx->result) == T_BIGNUM) {
-            UA_Int32 val = NUM2INT(ctx->result);
-            UA_Variant_setScalarCopy(&output[0], &val, &UA_TYPES[UA_TYPES_INT32]);
-        } else if (ctx->result == Qtrue || ctx->result == Qfalse) {
-            UA_Boolean val = RTEST(ctx->result);
-            UA_Variant_setScalarCopy(&output[0], &val, &UA_TYPES[UA_TYPES_BOOLEAN]);
-        }
-    }
-
-    return UA_STATUSCODE_GOOD;
+    return ctx->is_async ? UA_STATUSCODE_GOODCOMPLETESASYNCHRONOUSLY
+                         : UA_STATUSCODE_GOOD;
 }
 
 static VALUE server_add_method_node(VALUE self, VALUE rb_nid, VALUE rb_display_name,
@@ -560,9 +580,22 @@ static VALUE server_add_method_node(VALUE self, VALUE rb_nid, VALUE rb_display_n
     ScadaMethodCtx *ctx = ALLOC(ScadaMethodCtx);
     ctx->proc = rb_proc;
     ctx->server_obj = self;
-    ctx->input_args = Qnil;
     ctx->result = Qnil;
+    ctx->is_async = 0;
+    ctx->ua_server = NULL;
+    ctx->input = NULL;
+    ctx->input_size = 0;
+    ctx->output = NULL;
+    ctx->output_size = 0;
+    ctx->output_type_sym = Qnil;
     rb_ary_push(s->callback_procs, rb_proc);
+
+    /* Store output type symbol for variant conversion */
+    if (output_count > 0) {
+        VALUE first = rb_ary_entry(rb_output, 0);
+        ctx->output_type_sym = rb_hash_aref(first, ID2SYM(rb_intern("type")));
+        rb_ary_push(s->callback_procs, ctx->output_type_sym); /* prevent GC */
+    }
 
     UA_MethodAttributes methAttr = UA_MethodAttributes_default;
     methAttr.displayName = scada_to_localized_text(rb_display_name);
@@ -615,6 +648,37 @@ static VALUE server_has_node(VALUE self, VALUE rb_nid) {
     return Qfalse;
 }
 
+static VALUE server_commit_async_method_result(VALUE self,
+    VALUE rb_output_ptr, VALUE rb_result, VALUE rb_type) {
+    GET_SERVER(self, s);
+    UA_Variant *output = (UA_Variant *)(uintptr_t)NUM2ULL(rb_output_ptr);
+    scada_ruby_to_variant(rb_result, rb_type, &output[0]);
+    UA_Server_setAsyncCallMethodResult(s->server, output,
+                                        UA_STATUSCODE_GOOD);
+    return Qnil;
+}
+
+static VALUE server_fail_async_method_result(VALUE self,
+    VALUE rb_output_ptr) {
+    GET_SERVER(self, s);
+    UA_Variant *output = (UA_Variant *)(uintptr_t)NUM2ULL(rb_output_ptr);
+    UA_Server_setAsyncCallMethodResult(s->server, output,
+                                        UA_STATUSCODE_BADINTERNALERROR);
+    return Qnil;
+}
+
+static VALUE server_close(VALUE self) {
+    GET_SERVER(self, s);
+    if (s->server) {
+        if (s->config && s->config->logging)
+            scada_deactivate_logger(s->config->logging);
+        UA_Server_delete(s->server);
+        s->server = NULL;
+        s->config = NULL;
+    }
+    return Qnil;
+}
+
 void Init_scada_server(VALUE rb_mScada) {
     rb_cServer = rb_define_class_under(rb_mScada, "Server", rb_cObject);
     rb_define_alloc_func(rb_cServer, server_alloc);
@@ -629,4 +693,9 @@ void Init_scada_server(VALUE rb_mScada) {
     rb_define_method(rb_cServer, "_add_method_node", server_add_method_node, 6);
     rb_define_method(rb_cServer, "_add_namespace", server_add_namespace, 1);
     rb_define_method(rb_cServer, "_has_node", server_has_node, 1);
+    rb_define_method(rb_cServer, "close", server_close, 0);
+    rb_define_private_method(rb_cServer, "_commit_async_method_result",
+                             server_commit_async_method_result, 3);
+    rb_define_private_method(rb_cServer, "_fail_async_method_result",
+                             server_fail_async_method_result, 1);
 }

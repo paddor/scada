@@ -141,7 +141,6 @@ void Init_scada_node_id(VALUE rb_mScada) {
     rb_cNodeId = rb_define_class_under(rb_mScada, "NodeId", rb_cObject);
     rb_define_alloc_func(rb_cNodeId, node_id_alloc);
     rb_define_singleton_method(rb_cNodeId, "parse", node_id_s_parse, 1);
-    rb_define_singleton_method(rb_cNodeId, "_parse", node_id_s_parse, 1);
     rb_define_method(rb_cNodeId, "namespace", node_id_namespace, 0);
     rb_define_method(rb_cNodeId, "to_s", node_id_to_s, 0);
     rb_define_method(rb_cNodeId, "inspect", node_id_inspect, 0);

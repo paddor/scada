@@ -6,18 +6,21 @@ describe "Timestamp trigger (issue #5882)" do
   @fixture = ScadaHelper.start_shared_server { |s|
     s.add_variable('ns=1;s=pinned', type: :double, value: 42.0,
                     display_name: 'Pinned')
-    s.write_value('ns=1;s=pinned', 42.0, type: :double)
+    s.update_value('ns=1;s=pinned', 42.0, type: :double)
 
     s.add_variable('ns=1;s=temp', type: :double, value: 20.0,
                     display_name: 'Temperature')
-    s.write_value('ns=1;s=temp', 20.0, type: :double)
+    s.update_value('ns=1;s=temp', 20.0, type: :double)
 
     s.add_variable('ns=1;s=val', type: :double, value: 10.0,
                     display_name: 'Value')
-    s.write_value('ns=1;s=val', 10.0, type: :double)
+    s.update_value('ns=1;s=val', 10.0, type: :double)
+
+    s.add_variable('ns=1;s=custom_ts', type: :double, value: 0.0,
+                    display_name: 'CustomTS')
   }
 
-  it "write_value pins the sourceTimestamp" do
+  it "update_value pins the sourceTimestamp" do
     with_client(fixture) do |client|
       dv1 = client.read('ns=1;s=pinned').wait
       sleep 0.01
@@ -29,18 +32,30 @@ describe "Timestamp trigger (issue #5882)" do
     end
   end
 
-  it "write_value updates the sourceTimestamp when the value changes" do
+  it "update_value updates the sourceTimestamp when the value changes" do
     with_client(fixture) do |client|
       dv1 = client.read('ns=1;s=temp').wait
       assert_in_delta 20.0, dv1.value, 0.01
 
       sleep 0.01
-      fixture.server.write_value('ns=1;s=temp', 25.0, type: :double)
+      fixture.server.update_value('ns=1;s=temp', 25.0, type: :double)
 
       dv2 = client.read('ns=1;s=temp').wait
       assert_in_delta 25.0, dv2.value, 0.01
       refute_equal dv1.source_timestamp, dv2.source_timestamp,
-        'sourceTimestamp should change after write_value'
+        'sourceTimestamp should change after update_value'
+    end
+  end
+
+  it "update_value accepts a custom timestamp" do
+    with_client(fixture) do |client|
+      custom_time = Time.utc(2025, 6, 15, 12, 0, 0)
+      fixture.server.update_value('ns=1;s=custom_ts', 99.0, type: :double,
+                                  timestamp: custom_time)
+
+      dv = client.read('ns=1;s=custom_ts').wait
+      assert_in_delta 99.0, dv.value, 0.01
+      assert_in_delta custom_time.to_f, dv.source_timestamp.to_f, 0.01
     end
   end
 

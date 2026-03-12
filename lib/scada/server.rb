@@ -136,8 +136,8 @@ module Scada
       BindContext.new(self, ns).instance_eval(&block)
     end
 
-    def write_value(node_id, value, type:)
-      _write_value(parse_node_id(node_id), value, type)
+    def update_value(node_id, value, type:, timestamp: Time.now)
+      _write_value(parse_node_id(node_id), value, type, timestamp.to_f)
     end
 
     def add_namespace(uri)

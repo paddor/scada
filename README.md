@@ -24,7 +24,7 @@ Sync do |task|
 
   server.add_variable("ns=1;s=temperature", type: :double, value: 20.0,
                       display_name: "Temperature")
-  server.write_value("ns=1;s=temperature", 20.0, type: :double)
+  server.update_value("ns=1;s=temperature", 20.0, type: :double)
 
   server.add_method("ns=1;s=greet",
     display_name: "Greet",
@@ -36,7 +36,7 @@ Sync do |task|
   # Update values from your application logic
   loop do
     sleep 1
-    server.write_value("ns=1;s=temperature", rand(18.0..25.0), type: :double)
+    server.update_value("ns=1;s=temperature", rand(18.0..25.0), type: :double)
   end
 end
 ```
@@ -176,13 +176,14 @@ Scada::Server.new(config: Scada::Server::Config.default.with(logger: :silent))
 
 ### Server-Side Value Updates
 
-Use `write_value` to update a variable with an explicit `sourceTimestamp`:
+Use `update_value` to update a variable from server-side code:
 
 ```ruby
-server.write_value("ns=1;s=temperature", 22.5, type: :double)
-```
+server.update_value("ns=1;s=temperature", 22.5, type: :double)
 
-This pins the `sourceTimestamp`, which is important for subscriptions using the `status_value_timestamp` trigger — without it, older open62541 versions would generate a new timestamp on every read, flooding subscribers with spurious notifications.
+# With an explicit sourceTimestamp (defaults to Time.now)
+server.update_value("ns=1;s=temperature", 22.5, type: :double, timestamp: Time.now - 5)
+```
 
 ## Version Info
 

@@ -8,7 +8,13 @@ Gem::Specification.new do |s|
   s.authors     = ["roadster"]
   s.license     = "MIT"
   s.required_ruby_version = ">= 3.2"
-  s.metadata["rubygems_mfa_required"] = "true"
+  s.homepage    = "https://github.com/paddor/scada"
+  s.metadata    = {
+    "rubygems_mfa_required" => "true",
+    "source_code_uri"       => "https://github.com/paddor/scada",
+    "changelog_uri"         => "https://github.com/paddor/scada/blob/main/CHANGELOG.md",
+    "bug_tracker_uri"       => "https://github.com/paddor/scada/issues",
+  }
 
   s.files = Dir["lib/**/*.rb", "ext/**/*.{c,h,rb}", "data/**/*", "LICENSE", "README.md"]
   s.extensions = ["ext/scada/extconf.rb"]

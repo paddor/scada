@@ -2,13 +2,11 @@ require "mkmf"
 
 # open62541 amalgamation lives in deps/
 deps_dir = File.join(__dir__, "deps")
-gen_dir = File.join(__dir__, "generated")
 
 $srcs = Dir[File.join(__dir__, "*.c")].map { |f| File.basename(f) }
 $srcs << "deps/open62541.c"
 
 $INCFLAGS << " -I#{deps_dir}"
-$INCFLAGS << " -I#{gen_dir}"
 $VPATH << "$(srcdir)/deps"
 
 # C99 + open62541 config
@@ -32,6 +30,9 @@ end
 # Catch callback signature mismatches at compile time
 $CFLAGS << " -Werror=incompatible-pointer-types"
 $CFLAGS << " -Werror=implicit-function-declaration"
+
+# Optimize for size (open62541 amalgamation is large)
+$CFLAGS << " -Os"
 
 # Suppress warnings from amalgamation
 $warnflags = ""

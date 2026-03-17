@@ -3,10 +3,18 @@ require 'async'
 module Scada
   class Server
     CONFIG_FIELDS = %i[
-      port application_name application_uri product_uri
-      certificate private_key trust_list
-      security_mode users allow_anonymous
-      sampling_interval publishing_interval
+      port
+      application_name
+      application_uri
+      product_uri
+      certificate
+      private_key
+      trust_list
+      security_mode
+      users
+      allow_anonymous
+      sampling_interval
+      publishing_interval
       logger
     ].freeze
 

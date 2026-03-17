@@ -1,9 +1,15 @@
 module Scada
   class Client
     CONFIG_FIELDS = %i[
-      application_name application_uri product_uri
-      certificate private_key trust_list
-      security_mode username password
+      application_name
+      application_uri
+      product_uri
+      certificate
+      private_key
+      trust_list
+      security_mode
+      username
+      password
       connectivity_check_interval
       logger
     ].freeze

@@ -7,25 +7,32 @@ module Scada
   class Client
     module AsyncSupport
       def connect
-        if Fiber.scheduler
-          _connect_async
-          deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5.0
-          loop do
-            _run_iterate
-            s = state
-            raise_on_bad_status!(s.status, 'Connect failed')
-            break if s.session == SESSION_ACTIVATED
-            if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
-              raise Scada::Error, 'Connect timed out'
-            end
-            sleep TICK
+        return super unless Fiber.scheduler
+
+        _connect_async
+
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5.0
+
+        loop do
+          _run_iterate
+
+          s = state
+          raise_on_bad_status!(s.status, 'Connect failed')
+          break if s.session == SESSION_ACTIVATED
+
+          if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+            raise Scada::Error, 'Connect timed out'
           end
-          wait_for_namespaces(deadline)
-          @was_connected = true
-          self
-        else
-          super
+
+          # sleep, not Fiber.yield — with a single fiber, yield returns
+          # immediately and busy-loops at 100% CPU. sleep lets the
+          # scheduler pause for TICK even when no other fibers exist.
+          sleep TICK
         end
+
+        wait_for_namespaces(deadline)
+        @was_connected = true
+        self
       end
 
       def run

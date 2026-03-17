@@ -1,6 +1,6 @@
 require "minitest/autorun"
 require "scada"
-require "async"
+require "scada/async"
 
 # Suppress "IO::Buffer is experimental" warning from console gem
 Warning[:experimental] = false

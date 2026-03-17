@@ -1,6 +1,3 @@
-require 'async'
-require 'async/promise'
-
 module Scada
   class Client
     CONFIG_FIELDS = %i[
@@ -65,65 +62,37 @@ module Scada
     end
 
     def connect
-      _connect_async
-      deadline = Async::Clock.now + 5.0
-      loop do
-        _run_iterate
-        s = state
-        raise_on_bad_status!(s.status, 'Connect failed')
-        break if s.session == SESSION_ACTIVATED
-        if Async::Clock.now > deadline
-          raise Scada::Error, 'Connect timed out'
-        end
-        sleep TICK
+      _connect_sync
+      unless _have_namespaces?
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5.0
+        wait_for_namespaces(deadline)
       end
-      wait_for_namespaces(deadline)
       @was_connected = true
       self
     end
 
     def run
-      loop do
-        _run_iterate
-        maybe_reconnect
-        sleep TICK
-      end
+      raise Scada::Error, '#run requires an Async context'
     end
 
     def read(*node_ids, attribute: :value)
-      nids = node_ids.map do |n|
-        parse_node_id(n)
-      end
-      if nids.length == 1
-        read_single(nids[0], attribute)
-      else
-        Async do
-          nids.map do |nid|
-            read(nid, attribute: attribute).wait
-          end
-        end
-      end
+      nids = node_ids.map { |n| parse_node_id(n) }
+      results = nids.map { |nid| read_single_sync(nid, attribute) }
+      results.length == 1 ? results[0] : results
     end
 
     def write(node_id, value, type: nil)
       nid = parse_node_id(node_id)
-      Async do
-        condition = Async::Promise.new
-        _write_async(nid, value, type, condition)
-        status, _result = condition.wait
-        check_async_status!(status)
-      end
+      status, _result = _write_sync(nid, value, type)
+      check_async_status!(status)
+      nil
     end
 
     def call(node_id, *args)
       nid = parse_node_id(node_id)
-      Async do
-        condition = Async::Promise.new
-        _call_async(nid, args, condition)
-        status, result = condition.wait
-        check_async_status!(status)
-        result
-      end
+      status, result = _call_sync(nid, args)
+      check_async_status!(status)
+      result
     end
 
     def namespace(uri)
@@ -134,28 +103,11 @@ module Scada
       _get_namespace_index(uri)
     end
 
-    def subscribe(publish_interval: 0.1)
-      condition = Async::Promise.new
-      _create_subscription_async(
-        publish_interval, condition
-      )
-      status, sub_id = condition.wait
-      check_async_status!(status)
-      Subscription.new(self, sub_id)
+    def subscribe(publish_interval: 0.1) # rubocop:disable Lint/UnusedMethodArgument
+      raise Scada::Error, '#subscribe requires an Async context'
     end
 
     private
-
-    def maybe_reconnect
-      return unless @was_connected
-      s = state
-      return if s.session == SESSION_ACTIVATED
-
-      # Session lost — retry connect
-      _connect_async
-    rescue Scada::Error
-      # Connect attempt failed, will retry next tick
-    end
 
     def parse_node_id(node_id)
       if node_id.is_a?(NodeId)
@@ -165,14 +117,10 @@ module Scada
       end
     end
 
-    def read_single(nid, attribute)
-      Async do
-        condition = Async::Promise.new
-        _read_async(nid, attribute, condition)
-        status, result = condition.wait
-        check_async_status!(status)
-        attribute == :value ? result : result&.value
-      end
+    def read_single_sync(nid, attribute)
+      status, result = _read_sync(nid, attribute)
+      check_async_status!(status)
+      attribute == :value ? result : result&.value
     end
 
     def check_async_status!(status_code)
@@ -188,14 +136,10 @@ module Scada
     end
 
     def wait_for_namespaces(deadline)
-      # After session activation, the client fetches the
-      # namespace array asynchronously. Keep iterating
-      # until the local cache is populated (ns=1 goes
-      # from NULL to the server's application URI).
       loop do
         _run_iterate
         break if _have_namespaces?
-        if Async::Clock.now > deadline
+        if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
           raise Scada::Error, 'Namespace fetch timed out'
         end
         sleep TICK
@@ -205,5 +149,3 @@ module Scada
 end
 
 require_relative 'client/namespace'
-require_relative 'client/subscription'
-require_relative 'client/monitored_item'

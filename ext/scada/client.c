@@ -291,6 +291,124 @@ typedef struct {
 /* GVL trampoline: called from within the async callback (which fires
  * during run_iterate without GVL). Converts response and stores result. */
 
+/* --- Shared helpers for variant building and response conversion --- */
+
+/* Resolve a Ruby attribute symbol to a UA attribute ID.
+ * Raises rb_eArgError on unknown attribute. */
+static UA_UInt32 resolve_attribute_id(ID attr_id) {
+    if (attr_id == rb_intern("value"))
+        return UA_ATTRIBUTEID_VALUE;
+    else if (attr_id == rb_intern("display_name"))
+        return UA_ATTRIBUTEID_DISPLAYNAME;
+    else if (attr_id == rb_intern("browse_name"))
+        return UA_ATTRIBUTEID_BROWSENAME;
+    rb_raise(rb_eArgError, "Unknown attribute");
+    return 0; /* unreachable */
+}
+
+/* Build a UA_Variant from a Ruby value and optional type symbol.
+ * Raises rb_eArgError on unrecognized type. */
+static void build_write_variant(VALUE rb_value, VALUE rb_type_sym, UA_Variant *value) {
+    UA_Variant_init(value);
+    if (!NIL_P(rb_type_sym)) {
+        scada_ruby_to_variant(rb_value, rb_type_sym, value);
+    } else if (TYPE(rb_value) == T_FLOAT) {
+        UA_Double val = NUM2DBL(rb_value);
+        UA_Variant_setScalarCopy(value, &val, &UA_TYPES[UA_TYPES_DOUBLE]);
+    } else if (TYPE(rb_value) == T_STRING) {
+        UA_String val = UA_STRING_ALLOC(StringValueCStr(rb_value));
+        UA_Variant_setScalarCopy(value, &val, &UA_TYPES[UA_TYPES_STRING]);
+        UA_String_clear(&val);
+    } else if (FIXNUM_P(rb_value) || TYPE(rb_value) == T_BIGNUM) {
+        UA_Int32 val = NUM2INT(rb_value);
+        UA_Variant_setScalarCopy(value, &val, &UA_TYPES[UA_TYPES_INT32]);
+    } else if (rb_value == Qtrue || rb_value == Qfalse) {
+        UA_Boolean val = RTEST(rb_value);
+        UA_Variant_setScalarCopy(value, &val, &UA_TYPES[UA_TYPES_BOOLEAN]);
+    } else {
+        rb_raise(rb_eArgError, "Cannot infer OPC UA type from Ruby value");
+    }
+}
+
+/* Build call input variants from a Ruby array. Caller must free with UA_free. */
+static void build_call_inputs(VALUE rb_args, size_t *out_size, UA_Variant **out_inputs) {
+    *out_size = 0;
+    *out_inputs = NULL;
+    if (TYPE(rb_args) != T_ARRAY) return;
+    size_t inputSize = RARRAY_LEN(rb_args);
+    if (inputSize == 0) return;
+
+    UA_Variant *inputs = (UA_Variant *)UA_calloc(inputSize, sizeof(UA_Variant));
+    for (size_t i = 0; i < inputSize; i++) {
+        VALUE arg = rb_ary_entry(rb_args, i);
+        if (TYPE(arg) == T_STRING) {
+            UA_String val = UA_STRING_ALLOC(StringValueCStr(arg));
+            UA_Variant_setScalarCopy(&inputs[i], &val, &UA_TYPES[UA_TYPES_STRING]);
+            UA_String_clear(&val);
+        } else if (TYPE(arg) == T_FLOAT) {
+            UA_Double val = NUM2DBL(arg);
+            UA_Variant_setScalarCopy(&inputs[i], &val, &UA_TYPES[UA_TYPES_DOUBLE]);
+        } else if (FIXNUM_P(arg) || TYPE(arg) == T_BIGNUM) {
+            UA_Int32 val = NUM2INT(arg);
+            UA_Variant_setScalarCopy(&inputs[i], &val, &UA_TYPES[UA_TYPES_INT32]);
+        } else if (arg == Qtrue || arg == Qfalse) {
+            UA_Boolean val = RTEST(arg);
+            UA_Variant_setScalarCopy(&inputs[i], &val, &UA_TYPES[UA_TYPES_BOOLEAN]);
+        }
+    }
+    *out_size = inputSize;
+    *out_inputs = inputs;
+}
+
+/* Convert a UA_ReadResponse to a Ruby [status_code, result] array. */
+static VALUE convert_read_result(const UA_ReadResponse *rr) {
+    UA_StatusCode status = rr->responseHeader.serviceResult;
+    VALUE result = Qnil;
+    if (status == UA_STATUSCODE_GOOD && rr->resultsSize > 0) {
+        if (rr->results[0].hasStatus && rr->results[0].status != UA_STATUSCODE_GOOD) {
+            status = rr->results[0].status;
+        } else {
+            result = scada_data_value_to_ruby(&rr->results[0]);
+        }
+    }
+    VALUE ary = rb_ary_new_capa(2);
+    rb_ary_push(ary, UINT2NUM(status));
+    rb_ary_push(ary, result);
+    return ary;
+}
+
+/* Convert a UA_WriteResponse to a Ruby [status_code, nil] array. */
+static VALUE convert_write_result(const UA_WriteResponse *wr) {
+    UA_StatusCode status = wr->responseHeader.serviceResult;
+    if (status == UA_STATUSCODE_GOOD && wr->resultsSize > 0)
+        status = wr->results[0];
+    VALUE ary = rb_ary_new_capa(2);
+    rb_ary_push(ary, UINT2NUM(status));
+    rb_ary_push(ary, Qnil);
+    return ary;
+}
+
+/* Convert call method results to a Ruby [status_code, result] array. */
+static VALUE convert_call_result(UA_StatusCode status,
+                                  size_t outputSize, const UA_Variant *outputs) {
+    VALUE result = Qnil;
+    if (status == UA_STATUSCODE_GOOD) {
+        if (outputSize == 0) {
+            result = Qnil;
+        } else if (outputSize == 1) {
+            result = scada_variant_to_ruby(&outputs[0]);
+        } else {
+            result = rb_ary_new_capa(outputSize);
+            for (size_t i = 0; i < outputSize; i++)
+                rb_ary_push(result, scada_variant_to_ruby(&outputs[i]));
+        }
+    }
+    VALUE ary = rb_ary_new_capa(2);
+    rb_ary_push(ary, UINT2NUM(status));
+    rb_ary_push(ary, result);
+    return ary;
+}
+
 typedef struct {
     AsyncPending *pending;
     const UA_ReadResponse *read_response;
@@ -303,56 +421,32 @@ static void *signal_pending_with_gvl(void *arg) {
     GVLSignalArgs *a = arg;
     AsyncPending *p = a->pending;
 
+    VALUE signal_val;
     if (a->kind == 0 && a->read_response) {
-        const UA_ReadResponse *rr = a->read_response;
-        p->status = rr->responseHeader.serviceResult;
-        if (p->status == UA_STATUSCODE_GOOD && rr->resultsSize > 0) {
-            /* Check per-result status */
-            if (rr->results[0].hasStatus && rr->results[0].status != UA_STATUSCODE_GOOD) {
-                p->status = rr->results[0].status;
-                p->result = Qnil;
-            } else {
-                p->result = scada_data_value_to_ruby(&rr->results[0]);
-            }
-        } else {
-            p->result = Qnil;
-        }
+        signal_val = convert_read_result(a->read_response);
     } else if (a->kind == 1 && a->write_response) {
-        const UA_WriteResponse *wr = a->write_response;
-        p->status = wr->responseHeader.serviceResult;
-        if (p->status == UA_STATUSCODE_GOOD && wr->resultsSize > 0)
-            p->status = wr->results[0];
-        p->result = Qnil;
+        signal_val = convert_write_result(a->write_response);
     } else if (a->kind == 2 && a->call_response) {
         const UA_CallResponse *cr = a->call_response;
-        p->status = cr->responseHeader.serviceResult;
-        if (p->status == UA_STATUSCODE_GOOD && cr->resultsSize > 0) {
-            UA_CallMethodResult *mr = &cr->results[0];
-            p->status = mr->statusCode;
-            if (p->status == UA_STATUSCODE_GOOD) {
-                if (mr->outputArgumentsSize == 0) {
-                    p->result = Qnil;
-                } else if (mr->outputArgumentsSize == 1) {
-                    p->result = scada_variant_to_ruby(&mr->outputArguments[0]);
-                } else {
-                    p->result = rb_ary_new_capa(mr->outputArgumentsSize);
-                    for (size_t i = 0; i < mr->outputArgumentsSize; i++)
-                        rb_ary_push(p->result, scada_variant_to_ruby(&mr->outputArguments[i]));
-                }
-            } else {
-                p->result = Qnil;
-            }
-        } else {
-            p->result = Qnil;
+        UA_StatusCode status = cr->responseHeader.serviceResult;
+        const UA_Variant *outputs = NULL;
+        size_t outputSize = 0;
+        if (status == UA_STATUSCODE_GOOD && cr->resultsSize > 0) {
+            status = cr->results[0].statusCode;
+            outputs = cr->results[0].outputArguments;
+            outputSize = cr->results[0].outputArgumentsSize;
         }
+        signal_val = convert_call_result(status, outputSize, outputs);
+    } else {
+        signal_val = rb_ary_new_capa(2);
+        rb_ary_push(signal_val, UINT2NUM(UA_STATUSCODE_BADINTERNALERROR));
+        rb_ary_push(signal_val, Qnil);
     }
 
+    p->status = NUM2UINT(rb_ary_entry(signal_val, 0));
+    p->result = rb_ary_entry(signal_val, 1);
     p->completed = 1;
 
-    /* Signal the condition with [status_code, result] */
-    VALUE signal_val = rb_ary_new_capa(2);
-    rb_ary_push(signal_val, UINT2NUM(p->status));
-    rb_ary_push(signal_val, p->result);
     rb_funcall(p->condition, rb_intern("resolve"), 1, signal_val);
 
     return NULL;
@@ -402,7 +496,11 @@ static void call_async_cb(UA_Client *client, void *userdata,
 static VALUE client_read_async(VALUE self, VALUE rb_nid, VALUE rb_attribute, VALUE rb_condition) {
     GET_CLIENT(self, c);
     UA_NodeId nodeId = scada_node_id_unwrap(rb_nid);
-    ID attr_id = SYM2ID(rb_attribute);
+
+    UA_ReadValueId item;
+    UA_ReadValueId_init(&item);
+    item.nodeId = nodeId;
+    item.attributeId = resolve_attribute_id(SYM2ID(rb_attribute));
 
     AsyncPending *pending = ALLOC(AsyncPending);
     pending->condition = rb_condition;
@@ -410,75 +508,22 @@ static VALUE client_read_async(VALUE self, VALUE rb_nid, VALUE rb_attribute, VAL
     pending->status = UA_STATUSCODE_GOOD;
     pending->completed = 0;
 
-    /* Keep condition alive */
     rb_ary_push(c->callback_procs, rb_condition);
 
-    if (attr_id == rb_intern("value")) {
-        UA_ReadValueId item;
-        UA_ReadValueId_init(&item);
-        item.nodeId = nodeId;
-        item.attributeId = UA_ATTRIBUTEID_VALUE;
+    UA_ReadRequest request;
+    UA_ReadRequest_init(&request);
+    request.nodesToRead = &item;
+    request.nodesToReadSize = 1;
 
-        UA_ReadRequest request;
-        UA_ReadRequest_init(&request);
-        request.nodesToRead = &item;
-        request.nodesToReadSize = 1;
+    UA_UInt32 reqId;
+    UA_StatusCode rc = UA_Client_sendAsyncReadRequest(
+        c->client, &request,
+        (UA_ClientAsyncReadCallback)read_async_cb,
+        pending, &reqId);
 
-        UA_UInt32 reqId;
-        UA_StatusCode rc = UA_Client_sendAsyncReadRequest(
-            c->client, &request,
-            (UA_ClientAsyncReadCallback)read_async_cb,
-            pending, &reqId);
-
-        if (rc != UA_STATUSCODE_GOOD) {
-            xfree(pending);
-            scada_check_status(rc);
-        }
-    } else if (attr_id == rb_intern("display_name")) {
-        UA_ReadValueId item;
-        UA_ReadValueId_init(&item);
-        item.nodeId = nodeId;
-        item.attributeId = UA_ATTRIBUTEID_DISPLAYNAME;
-
-        UA_ReadRequest request;
-        UA_ReadRequest_init(&request);
-        request.nodesToRead = &item;
-        request.nodesToReadSize = 1;
-
-        UA_UInt32 reqId;
-        UA_StatusCode rc = UA_Client_sendAsyncReadRequest(
-            c->client, &request,
-            (UA_ClientAsyncReadCallback)read_async_cb,
-            pending, &reqId);
-
-        if (rc != UA_STATUSCODE_GOOD) {
-            xfree(pending);
-            scada_check_status(rc);
-        }
-    } else if (attr_id == rb_intern("browse_name")) {
-        UA_ReadValueId item;
-        UA_ReadValueId_init(&item);
-        item.nodeId = nodeId;
-        item.attributeId = UA_ATTRIBUTEID_BROWSENAME;
-
-        UA_ReadRequest request;
-        UA_ReadRequest_init(&request);
-        request.nodesToRead = &item;
-        request.nodesToReadSize = 1;
-
-        UA_UInt32 reqId;
-        UA_StatusCode rc = UA_Client_sendAsyncReadRequest(
-            c->client, &request,
-            (UA_ClientAsyncReadCallback)read_async_cb,
-            pending, &reqId);
-
-        if (rc != UA_STATUSCODE_GOOD) {
-            xfree(pending);
-            scada_check_status(rc);
-        }
-    } else {
+    if (rc != UA_STATUSCODE_GOOD) {
         xfree(pending);
-        rb_raise(rb_eArgError, "Unknown attribute");
+        scada_check_status(rc);
     }
 
     return Qnil;
@@ -490,6 +535,9 @@ static VALUE client_write_async(VALUE self, VALUE rb_nid, VALUE rb_value, VALUE 
     GET_CLIENT(self, c);
     UA_NodeId nodeId = scada_node_id_unwrap(rb_nid);
 
+    UA_Variant value;
+    build_write_variant(rb_value, rb_type_sym, &value);
+
     AsyncPending *pending = ALLOC(AsyncPending);
     pending->condition = rb_condition;
     pending->result = Qnil;
@@ -497,30 +545,6 @@ static VALUE client_write_async(VALUE self, VALUE rb_nid, VALUE rb_value, VALUE 
     pending->completed = 0;
 
     rb_ary_push(c->callback_procs, rb_condition);
-
-    UA_Variant value;
-    UA_Variant_init(&value);
-
-    if (!NIL_P(rb_type_sym)) {
-        /* Explicit type provided — use full variant conversion */
-        scada_ruby_to_variant(rb_value, rb_type_sym, &value);
-    } else if (TYPE(rb_value) == T_FLOAT) {
-        UA_Double val = NUM2DBL(rb_value);
-        UA_Variant_setScalarCopy(&value, &val, &UA_TYPES[UA_TYPES_DOUBLE]);
-    } else if (TYPE(rb_value) == T_STRING) {
-        UA_String val = UA_STRING_ALLOC(StringValueCStr(rb_value));
-        UA_Variant_setScalarCopy(&value, &val, &UA_TYPES[UA_TYPES_STRING]);
-        UA_String_clear(&val);
-    } else if (FIXNUM_P(rb_value) || TYPE(rb_value) == T_BIGNUM) {
-        UA_Int32 val = NUM2INT(rb_value);
-        UA_Variant_setScalarCopy(&value, &val, &UA_TYPES[UA_TYPES_INT32]);
-    } else if (rb_value == Qtrue || rb_value == Qfalse) {
-        UA_Boolean val = RTEST(rb_value);
-        UA_Variant_setScalarCopy(&value, &val, &UA_TYPES[UA_TYPES_BOOLEAN]);
-    } else {
-        xfree(pending);
-        rb_raise(rb_eArgError, "Cannot infer OPC UA type from Ruby value");
-    }
 
     UA_WriteValue wv;
     UA_WriteValue_init(&wv);
@@ -557,6 +581,10 @@ static VALUE client_call_async(VALUE self, VALUE rb_nid, VALUE rb_args, VALUE rb
     UA_NodeId objectId = UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER);
     UA_NodeId methodId = scada_node_id_unwrap(rb_nid);
 
+    size_t inputSize = 0;
+    UA_Variant *inputs = NULL;
+    build_call_inputs(rb_args, &inputSize, &inputs);
+
     AsyncPending *pending = ALLOC(AsyncPending);
     pending->condition = rb_condition;
     pending->result = Qnil;
@@ -564,33 +592,6 @@ static VALUE client_call_async(VALUE self, VALUE rb_nid, VALUE rb_args, VALUE rb
     pending->completed = 0;
 
     rb_ary_push(c->callback_procs, rb_condition);
-
-    size_t inputSize = 0;
-    UA_Variant *inputs = NULL;
-
-    if (TYPE(rb_args) == T_ARRAY) {
-        inputSize = RARRAY_LEN(rb_args);
-        if (inputSize > 0) {
-            inputs = (UA_Variant *)UA_calloc(inputSize, sizeof(UA_Variant));
-            for (size_t i = 0; i < inputSize; i++) {
-                VALUE arg = rb_ary_entry(rb_args, i);
-                if (TYPE(arg) == T_STRING) {
-                    UA_String val = UA_STRING_ALLOC(StringValueCStr(arg));
-                    UA_Variant_setScalarCopy(&inputs[i], &val, &UA_TYPES[UA_TYPES_STRING]);
-                    UA_String_clear(&val);
-                } else if (TYPE(arg) == T_FLOAT) {
-                    UA_Double val = NUM2DBL(arg);
-                    UA_Variant_setScalarCopy(&inputs[i], &val, &UA_TYPES[UA_TYPES_DOUBLE]);
-                } else if (FIXNUM_P(arg) || TYPE(arg) == T_BIGNUM) {
-                    UA_Int32 val = NUM2INT(arg);
-                    UA_Variant_setScalarCopy(&inputs[i], &val, &UA_TYPES[UA_TYPES_INT32]);
-                } else if (arg == Qtrue || arg == Qfalse) {
-                    UA_Boolean val = RTEST(arg);
-                    UA_Variant_setScalarCopy(&inputs[i], &val, &UA_TYPES[UA_TYPES_BOOLEAN]);
-                }
-            }
-        }
-    }
 
     UA_UInt32 reqId;
     UA_StatusCode rc = UA_Client_call_async(
@@ -998,6 +999,200 @@ static VALUE client_close(VALUE self) {
     return Qnil;
 }
 
+/* --- Sync connect --- */
+
+typedef struct {
+    UA_Client *client;
+    const char *url;
+    UA_StatusCode result;
+} ConnectSyncArgs;
+
+static void *connect_sync_nogvl(void *arg) {
+    ConnectSyncArgs *a = arg;
+    UA_ClientConfig *config = UA_Client_getConfig(a->client);
+    if (config && config->logging)
+        scada_logger_set_gvl(config->logging, 0);
+    a->result = UA_Client_connect(a->client, a->url);
+    if (config && config->logging)
+        scada_logger_set_gvl(config->logging, 1);
+    return NULL;
+}
+
+static VALUE client_connect_sync(VALUE self) {
+    GET_CLIENT(self, c);
+
+    VALUE username = rb_iv_get(self, "@_username");
+    VALUE password = rb_iv_get(self, "@_password");
+    if (!NIL_P(username) && !NIL_P(password)) {
+        UA_ClientConfig *config = UA_Client_getConfig(c->client);
+        UA_StatusCode rc = UA_ClientConfig_setAuthenticationUsername(
+            config, StringValueCStr(username), StringValueCStr(password));
+        scada_check_status(rc);
+    }
+
+    ConnectSyncArgs args = { c->client, c->endpoint_url, UA_STATUSCODE_GOOD };
+    rb_thread_call_without_gvl(connect_sync_nogvl, &args,
+                               RUBY_UBF_IO, NULL);
+    scada_check_status(args.result);
+    return self;
+}
+
+/* --- Sync read --- */
+
+typedef struct {
+    UA_Client *client;
+    UA_ReadRequest request;
+    UA_ReadResponse response;
+} ReadSyncArgs;
+
+static void *read_sync_nogvl(void *arg) {
+    ReadSyncArgs *a = arg;
+    UA_ClientConfig *config = UA_Client_getConfig(a->client);
+    if (config && config->logging)
+        scada_logger_set_gvl(config->logging, 0);
+    a->response = UA_Client_Service_read(a->client, a->request);
+    if (config && config->logging)
+        scada_logger_set_gvl(config->logging, 1);
+    return NULL;
+}
+
+static VALUE client_read_sync(VALUE self, VALUE rb_nid, VALUE rb_attribute) {
+    GET_CLIENT(self, c);
+    UA_NodeId nodeId = scada_node_id_unwrap(rb_nid);
+
+    UA_ReadValueId item;
+    UA_ReadValueId_init(&item);
+    item.nodeId = nodeId;
+    item.attributeId = resolve_attribute_id(SYM2ID(rb_attribute));
+
+    UA_ReadRequest request;
+    UA_ReadRequest_init(&request);
+    request.nodesToRead = &item;
+    request.nodesToReadSize = 1;
+
+    ReadSyncArgs args;
+    args.client = c->client;
+    args.request = request;
+
+    rb_thread_call_without_gvl(read_sync_nogvl, &args,
+                               RUBY_UBF_IO, NULL);
+
+    VALUE result = convert_read_result(&args.response);
+    UA_ReadResponse_clear(&args.response);
+    return result;
+}
+
+/* --- Sync write --- */
+
+typedef struct {
+    UA_Client *client;
+    UA_WriteRequest request;
+    UA_WriteResponse response;
+} WriteSyncArgs;
+
+static void *write_sync_nogvl(void *arg) {
+    WriteSyncArgs *a = arg;
+    UA_ClientConfig *config = UA_Client_getConfig(a->client);
+    if (config && config->logging)
+        scada_logger_set_gvl(config->logging, 0);
+    a->response = UA_Client_Service_write(a->client, a->request);
+    if (config && config->logging)
+        scada_logger_set_gvl(config->logging, 1);
+    return NULL;
+}
+
+static VALUE client_write_sync(VALUE self, VALUE rb_nid, VALUE rb_value, VALUE rb_type_sym) {
+    GET_CLIENT(self, c);
+    UA_NodeId nodeId = scada_node_id_unwrap(rb_nid);
+
+    UA_Variant value;
+    build_write_variant(rb_value, rb_type_sym, &value);
+
+    UA_WriteValue wv;
+    UA_WriteValue_init(&wv);
+    wv.nodeId = nodeId;
+    wv.attributeId = UA_ATTRIBUTEID_VALUE;
+    wv.value.hasValue = true;
+    wv.value.value = value;
+
+    UA_WriteRequest request;
+    UA_WriteRequest_init(&request);
+    request.nodesToWrite = &wv;
+    request.nodesToWriteSize = 1;
+
+    WriteSyncArgs args;
+    args.client = c->client;
+    args.request = request;
+
+    rb_thread_call_without_gvl(write_sync_nogvl, &args,
+                               RUBY_UBF_IO, NULL);
+
+    VALUE result = convert_write_result(&args.response);
+    UA_WriteResponse_clear(&args.response);
+    UA_Variant_clear(&value);
+    return result;
+}
+
+/* --- Sync call --- */
+
+typedef struct {
+    UA_Client *client;
+    UA_NodeId objectId;
+    UA_NodeId methodId;
+    size_t inputSize;
+    const UA_Variant *input;
+    size_t outputSize;
+    UA_Variant *output;
+    UA_StatusCode result;
+} CallSyncArgs;
+
+static void *call_sync_nogvl(void *arg) {
+    CallSyncArgs *a = arg;
+    UA_ClientConfig *config = UA_Client_getConfig(a->client);
+    if (config && config->logging)
+        scada_logger_set_gvl(config->logging, 0);
+    a->result = UA_Client_call(a->client, a->objectId, a->methodId,
+                                a->inputSize, a->input,
+                                &a->outputSize, &a->output);
+    if (config && config->logging)
+        scada_logger_set_gvl(config->logging, 1);
+    return NULL;
+}
+
+static VALUE client_call_sync(VALUE self, VALUE rb_nid, VALUE rb_args) {
+    GET_CLIENT(self, c);
+    UA_NodeId objectId = UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER);
+    UA_NodeId methodId = scada_node_id_unwrap(rb_nid);
+
+    size_t inputSize = 0;
+    UA_Variant *inputs = NULL;
+    build_call_inputs(rb_args, &inputSize, &inputs);
+
+    CallSyncArgs args;
+    args.client = c->client;
+    args.objectId = objectId;
+    args.methodId = methodId;
+    args.inputSize = inputSize;
+    args.input = inputs;
+    args.outputSize = 0;
+    args.output = NULL;
+    args.result = UA_STATUSCODE_GOOD;
+
+    rb_thread_call_without_gvl(call_sync_nogvl, &args,
+                               RUBY_UBF_IO, NULL);
+
+    for (size_t i = 0; i < inputSize; i++)
+        UA_Variant_clear(&inputs[i]);
+    UA_free(inputs);
+
+    VALUE result = convert_call_result(args.result, args.outputSize, args.output);
+
+    if (args.output)
+        UA_Array_delete(args.output, args.outputSize, &UA_TYPES[UA_TYPES_VARIANT]);
+
+    return result;
+}
+
 /* --- Init --- */
 
 void Init_scada_client(VALUE rb_mScada) {
@@ -1016,5 +1211,9 @@ void Init_scada_client(VALUE rb_mScada) {
     rb_define_method(rb_cClient, "_create_subscription_async", client_create_subscription_async, 2);
     rb_define_method(rb_cClient, "_add_monitored_data_change", client_add_monitored_data_change, 5);
     rb_define_method(rb_cClient, "_add_monitored_event", client_add_monitored_event, 5);
+    rb_define_method(rb_cClient, "_connect_sync", client_connect_sync, 0);
+    rb_define_method(rb_cClient, "_read_sync", client_read_sync, 2);
+    rb_define_method(rb_cClient, "_write_sync", client_write_sync, 3);
+    rb_define_method(rb_cClient, "_call_sync", client_call_sync, 2);
     rb_define_method(rb_cClient, "close", client_close, 0);
 }

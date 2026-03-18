@@ -1,18 +1,24 @@
 #include "scada.h"
 #include <string.h>
 
+/* Forward declarations */
+static void sub_delete_cb(UA_Client *client, UA_UInt32 subId,
+                           void *subContext);
+
 typedef struct {
     UA_Client *client;
     VALUE callback_procs;
     char *endpoint_url;
-    VALUE pending;  /* Hash { request_id => [condition, result] } */
-    int freeing;    /* set during GC to suppress callbacks */
+    VALUE pending;             /* Hash { request_id => [condition, result] } */
+    VALUE inactive_callbacks;  /* Hash { sub_id => Proc } for subscription inactivity */
+    int freeing;               /* set during GC to suppress callbacks */
 } ScadaClient;
 
 static void client_mark(void *ptr) {
     ScadaClient *c = ptr;
     rb_gc_mark(c->callback_procs);
     rb_gc_mark(c->pending);
+    rb_gc_mark(c->inactive_callbacks);
 }
 
 static void client_free(void *ptr) {
@@ -57,6 +63,7 @@ static VALUE client_alloc(VALUE klass) {
     memset(c, 0, sizeof(ScadaClient));
     c->callback_procs = rb_ary_new();
     c->pending = rb_hash_new();
+    c->inactive_callbacks = rb_hash_new();
     return TypedData_Wrap_Struct(klass, &client_type, c);
 }
 
@@ -192,7 +199,8 @@ static VALUE client_initialize(int argc, VALUE *argv, VALUE self) {
     }
 
     /* Store back-pointer so async callbacks can check the freeing flag */
-    UA_Client_getConfig(c->client)->clientContext = c;
+    UA_ClientConfig *final_cc = UA_Client_getConfig(c->client);
+    final_cc->clientContext = c;
 
     return self;
 }
@@ -638,6 +646,42 @@ static VALUE client_get_namespace_index(VALUE self, VALUE rb_uri) {
 
 /* --- Subscriptions --- */
 
+/* Subscription delete callback — fires when the subscription is removed,
+ * either because the session was lost (server restart, network timeout)
+ * or because the subscription was explicitly deleted. */
+
+typedef struct {
+    ScadaClient *sc;
+    UA_UInt32 subId;
+} SubDeleteGVLArgs;
+
+static void *sub_delete_with_gvl(void *arg) {
+    SubDeleteGVLArgs *a = arg;
+    VALUE key = UINT2NUM(a->subId);
+    VALUE proc = rb_hash_aref(a->sc->inactive_callbacks, key);
+    if (!NIL_P(proc))
+        rb_funcall(proc, rb_intern("call"), 0);
+    /* Remove the callback — subscription ID is no longer valid */
+    rb_hash_delete(a->sc->inactive_callbacks, key);
+    return NULL;
+}
+
+static void sub_delete_cb(UA_Client *client, UA_UInt32 subId,
+                           void *subContext) {
+    (void)subContext;
+    if (client_is_freeing(client)) return;
+    UA_ClientConfig *config = UA_Client_getConfig(client);
+    ScadaClient *sc = (ScadaClient *)config->clientContext;
+    SubDeleteGVLArgs args = { sc, subId };
+    rb_thread_call_with_gvl(sub_delete_with_gvl, &args);
+}
+
+static VALUE client_set_sub_inactive_cb(VALUE self, VALUE rb_sub_id, VALUE rb_proc) {
+    GET_CLIENT(self, c);
+    rb_hash_aset(c->inactive_callbacks, rb_sub_id, rb_proc);
+    return Qnil;
+}
+
 typedef struct {
     AsyncPending *pending;
     UA_CreateSubscriptionResponse *response;
@@ -685,7 +729,7 @@ static VALUE client_create_subscription_async(VALUE self, VALUE rb_interval, VAL
 
     UA_UInt32 reqId;
     UA_StatusCode rc = UA_Client_Subscriptions_create_async(
-        c->client, request, NULL, NULL, NULL,
+        c->client, request, NULL, NULL, sub_delete_cb,
         create_sub_cb_nogvl, pending, &reqId);
 
     if (rc != UA_STATUSCODE_GOOD) {
@@ -1209,6 +1253,7 @@ void Init_scada_client(VALUE rb_mScada) {
     rb_define_method(rb_cClient, "_namespace_get_index", client_namespace_get_index, 1);
     rb_define_method(rb_cClient, "_get_namespace_index", client_get_namespace_index, 1);
     rb_define_method(rb_cClient, "_create_subscription_async", client_create_subscription_async, 2);
+    rb_define_method(rb_cClient, "_set_sub_inactive_cb", client_set_sub_inactive_cb, 2);
     rb_define_method(rb_cClient, "_add_monitored_data_change", client_add_monitored_data_change, 5);
     rb_define_method(rb_cClient, "_add_monitored_event", client_add_monitored_event, 5);
     rb_define_method(rb_cClient, "_connect_sync", client_connect_sync, 0);

@@ -18,6 +18,10 @@ module Scada
       end
       alias_method :monitor, :monitor_data_changes
 
+      def on_inactive(&block)
+        @client._set_sub_inactive_cb(@sub_id, block)
+      end
+
       def monitor_events(node_id, select: [], where: {}, &block)
         nid = parse_node_id(node_id)
         condition = Async::Promise.new

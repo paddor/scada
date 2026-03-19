@@ -444,6 +444,58 @@ describe "System tests" do
       end
     end
 
+    it "on_connect fires after initial connect and reconnect" do
+      port = rand(40_000..50_000)
+
+      Sync do |task|
+        server1 = make_server(port)
+        server_task = task.async { server1.run }
+
+        cfg = Scada::Client::Config.default.with(
+          connectivity_check_interval: 0.1
+        )
+        client = new_client("opc.tcp://localhost:#{port}", config: cfg)
+
+        connect_count = 0
+        disconnect_count = 0
+        client.on_connect { connect_count += 1 }
+        client.on_disconnect { disconnect_count += 1 }
+
+        client.connect
+        client_task = task.async { client.run }
+
+        # wait for on_connect to fire
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5.0
+        sleep 0.01 until connect_count >= 1 || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+        assert_equal 1, connect_count
+        assert_equal 0, disconnect_count
+
+        # kill server
+        server_task.stop
+        server1.close
+        sleep 0.2
+
+        # wait for on_disconnect
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5.0
+        sleep 0.01 until disconnect_count >= 1 || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+        assert_equal 1, disconnect_count
+
+        # restart server
+        server2 = make_server(port)
+        server_task = task.async { server2.run }
+
+        # wait for on_connect to fire again
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 10.0
+        sleep 0.01 until connect_count >= 2 || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+        assert_equal 2, connect_count
+      ensure
+        client_task&.stop
+        client&.close
+        server_task&.stop
+        server2&.close
+      end
+    end
+
     it "on_inactive does not fire during normal operation" do
       with_client(fixture) do |client|
         inactive_called = false

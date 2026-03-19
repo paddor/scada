@@ -60,11 +60,46 @@ module Scada
     # Session states from open62541
     SESSION_ACTIVATED = 4
 
-    State = Data.define(:session, :status, :channel)
+    # Snapshot of the client's connection state.
+    #
+    # @!attribute [r] session [Integer] session state (see +SESSION_ACTIVATED+)
+    # @!attribute [r] status [StatusCode] connection status code
+    # @!attribute [r] channel [Integer] secure channel state
+    #
+    State = Data.define(:session, :status, :channel) do
+      # @return [Boolean] whether the OPC UA session is fully activated
+      def session_activated?
+        session == SESSION_ACTIVATED
+      end
+    end
 
+    # @return [State] the current connection state
     def state
       session, status_code, channel = _get_state
       State.new(session, StatusCode.new(status_code), channel)
+    end
+
+    # Registers a callback that fires when the session becomes activated inside the {#run} loop.
+    #
+    # Fires on the initial connection and on every subsequent reconnection. The callback is
+    # invoked from within +_run_iterate+, so it must not perform blocking SCADA operations
+    # (use a deferred queue or flag instead).
+    #
+    # @yield called when session transitions from inactive → activated
+    #
+    def on_connect(&block)
+      @on_connect = block
+    end
+
+    # Registers a callback that fires when the session drops inside the {#run} loop.
+    #
+    # Fires when a previously activated session becomes inactive (e.g. server stopped).
+    # Same restrictions as {#on_connect}: no blocking SCADA operations in the callback.
+    #
+    # @yield called when session transitions from activated → inactive
+    #
+    def on_disconnect(&block)
+      @on_disconnect = block
     end
 
     def connect

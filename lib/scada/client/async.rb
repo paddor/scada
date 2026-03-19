@@ -5,7 +5,20 @@ require_relative 'monitored_item'
 
 module Scada
   class Client
+    # Async-aware overrides for {Client} methods. Prepended when
+    # +scada/async+ is required.
+    #
+    # Each method checks +Fiber.scheduler+ — if absent, falls back
+    # to the sync implementation. When a scheduler is present,
+    # operations return +Async::Task+ objects awaitable with +.wait+.
+    #
     module AsyncSupport
+      # Async-aware connect. Polls +_run_iterate+ until the session
+      # activates or a timeout (5s) elapses.
+      #
+      # @return [self]
+      # @raise [Scada::Error] on bad status or timeout
+      #
       def connect
         return super unless Fiber.scheduler
 
@@ -18,7 +31,7 @@ module Scada
 
           s = state
           raise_on_bad_status!(s.status, 'Connect failed')
-          break if s.session == SESSION_ACTIVATED
+          break if s.session_activated?
 
           if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
             raise Scada::Error, 'Connect timed out'
@@ -35,16 +48,47 @@ module Scada
         self
       end
 
+      # Blocking event loop that drives the OPC UA client.
+      #
+      # Calls +_run_iterate+ each tick, attempts reconnection if the
+      # session dropped, and detects session state transitions to fire
+      # +on_connect+ / +on_disconnect+ callbacks.
+      #
+      # The callbacks fire synchronously inside this loop (during
+      # +_run_iterate+ processing), so they must not perform blocking
+      # SCADA operations — use a deferred queue or flag.
+      #
+      # @note Blocks the current fiber indefinitely. Run it in its
+      #   own +Async+ task.
+      #
       def run
         return super unless Fiber.scheduler
 
+        session_was_activated = false
         loop do
           _run_iterate
           maybe_reconnect
+
+          activated = state.session_activated?
+          if activated && !session_was_activated
+            session_was_activated = true
+            @on_connect&.call
+          elsif !activated && session_was_activated
+            session_was_activated = false
+            @on_disconnect&.call
+          end
+
           sleep TICK
         end
       end
 
+      # Async read. Returns an {Async::Task} that resolves to a
+      # {DataValue} (single) or array.
+      #
+      # @param node_ids [Array<String, NodeId>]
+      # @param attribute [Symbol] attribute to read (default +:value+)
+      # @return [Async::Task<DataValue>]
+      #
       def read(*node_ids, attribute: :value)
         if Fiber.scheduler
           nids = node_ids.map { |n| parse_node_id(n) }
@@ -60,6 +104,13 @@ module Scada
         end
       end
 
+      # Async write. Returns an {Async::Task} that resolves when the write completes.
+      #
+      # @param node_id [String, NodeId]
+      # @param value [Object]
+      # @param type [Symbol, nil] SCADA type hint (e.g. +:double+, +:uint32+)
+      # @return [Async::Task<nil>]
+      #
       def write(node_id, value, type: nil)
         if Fiber.scheduler
           nid = parse_node_id(node_id)
@@ -74,6 +125,12 @@ module Scada
         end
       end
 
+      # Async method call. Returns an {Async::Task} that resolves to the method result.
+      #
+      # @param node_id [String, NodeId]
+      # @param args [Array<Object>] input arguments
+      # @return [Async::Task<Object>]
+      #
       def call(node_id, *args)
         if Fiber.scheduler
           nid = parse_node_id(node_id)
@@ -89,6 +146,12 @@ module Scada
         end
       end
 
+      # Creates a new subscription for monitoring data changes or events.
+      #
+      # @param publish_interval [Float] seconds between server publish cycles
+      # @return [Subscription]
+      # @raise [Scada::Error] if the server rejects the subscription
+      #
       def subscribe(publish_interval: 0.1)
         return super unless Fiber.scheduler
 
@@ -101,10 +164,13 @@ module Scada
 
       private
 
+      # Attempts to reconnect if the session dropped. Called each tick from {#run}.
+      # Silently swallows errors — reconnection will be retried on the next tick.
+      #
       def maybe_reconnect
         return unless @was_connected
         s = state
-        return if s.session == SESSION_ACTIVATED
+        return if s.session_activated?
 
         _connect_async
       rescue Scada::Error
